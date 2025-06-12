@@ -31,9 +31,12 @@ from the AST.
 
 from ...seqmatch import MatchScoreModel
 from .parser import IntersectConfigParser
+from ... import align
 
 __all__ = [
-    'get_intersect_config', 'IntersectConfig'
+    'IntersectConfig',
+    'DEFAULT_SCORE_GAP', 'DEFAULT_SCORE_MATCH', 'DEFAULT_SCORE_MISMATCH',
+    'RESERVED_PARAM_NAMES', 'DEFAULT_MATCHER_SCORE'
 ]
 
 # Recognized values for the val_type field of specification objects and a set of
@@ -47,8 +50,15 @@ TYPE_MATCHER = {
     'int_u': {'int', 'unlimited'},
     'float_u': {'float', 'unlimited'},
     'int': {'int'},
-    'float': {'float'}
+    'float': {'float'},
+    'list': {'list'}
 }
+
+DEFAULT_SCORE_GAP = [val for vals in align.score.AFFINE_SCORE_GAP for val in vals]
+
+DEFAULT_SCORE_MATCH = align.score.AFFINE_SCORE_MATCH
+
+DEFAULT_SCORE_MISMATCH = align.score.AFFINE_SCORE_MISMATCH
 
 # Define a list of reserved parameter names for each specification (ro, szro,
 # etc). These are fields used by the paramter object and no parameter arguments
@@ -77,217 +87,8 @@ DEFAULT_MATCHER_SCORE = 0.8
 
 
 #
-# Config function
-#
-
-def get_intersect_config(intersect_params):
-    """
-    Get a configured parameter set.
-
-    :param intersect_params: Intersect parameter string.
-
-    :return: Intersect configuration object.
-    """
-    intersect_config_parser = IntersectConfigParser()
-
-    try:
-        parser_ast = intersect_config_parser.parse(intersect_params)
-    except RuntimeError as e:
-        raise RuntimeError(f'Error parsing intersect parameters "{intersect_params}": {e}')
-
-    return IntersectConfig(parser_ast)
-
-
-#
 # MergeConfig
 #
-
-class IntersectConfig(object):
-    """
-    A fully configured merger. Takes the AST output from the parser and generates a configuration object.
-    """
-
-    def __init__(self, parser_ast):
-
-        # Check arguments
-        if parser_ast is None:
-            raise RuntimeError('MergeConfig: Cannot create a merge config object: parser_ast is None')
-
-        self.parser_ast = parser_ast
-
-        missing_keys = [val for val in ('strategy', 'spec_list') if val not in parser_ast.keys()]
-
-        if missing_keys:
-            raise RuntimeError('MergeConfig: Missing {} AST key(s): {}'.format(
-                len(missing_keys),
-                ', '.join(missing_keys)
-            ))
-
-        # Create an empty MergeConfig
-        self.strategy = parser_ast['strategy'].lower()
-
-        self.spec_list = list()
-        self.default_matcher = None
-
-        self.multi_target = False  # If True, target sequences can be matched by multiple sources (not removed for each match)
-
-        self.extern_matcher = False  # Set to True if an external matcher is used (incompatible with multi_target)
-
-        # Set REF/ALT flag (check REF and ALT for SNVs) based on the strategy name
-        self.refalt = self.strategy in {'nrsnv', 'nrsnp'}
-
-        # Add specifications
-        for index in range(len(parser_ast['spec_list'])):
-            spec_ast = parser_ast['spec_list'][index]
-
-            # Check keys
-            missing_keys = [val for val in ('type', 'val_list') if val not in spec_ast.keys()]
-
-            if missing_keys:
-                raise RuntimeError('MergeConfig: Missing {} specification AST key(s) for specification at position {}: {}'.format(
-                    len(missing_keys),
-                    index + 1,
-                    ', '.join(missing_keys)
-                ))
-
-            # Process specification type
-            spec = None
-
-            if self.strategy == 'nr':
-                if spec_ast['type'] == 'exact':
-                    spec = IntersectSpecExact(spec_ast['val_list'])
-
-                elif spec_ast['type'] == 'ro':
-                    spec = IntersectSpecRo(spec_ast['val_list'])
-
-                elif spec_ast['type'] == 'szro':
-                    spec = IntersectSpecSzro(spec_ast['val_list'])
-
-                elif spec_ast['type'] == 'distance':
-                    spec = IntersectSpecDistance(spec_ast['val_list'])
-
-                elif spec_ast['type'] == 'truvari':
-                    spec = IntersectSpecTruvari(spec_ast['val_list'])
-                    self.extern_matcher = True
-
-                elif spec_ast['type'] == 'multitgt':
-                    self.multi_target = True
-
-                elif spec_ast['type'] == 'match':
-                    self.default_matcher = IntersectSpecMatch(spec_ast['val_list'])
-
-                else:
-                    raise RuntimeError(f'MergeConfig {self.strategy}: Merge specification type at {index + 1} is unknown: {spec_ast["type"]}')
-
-            elif self.strategy in {'nrsnv', 'nrsnp'}:
-                if spec_ast['type'] == 'exact':
-                    spec = IntersectSpecExact(spec_ast['val_list'])
-
-                elif spec_ast['type'] == 'distance':
-                    raise RuntimeError('IntersectSpecDistance is not yet implemented')
-                    #spec = IntersectSpecDistance(spec_ast['val_list'])
-
-                elif spec_ast['type'] == 'multitgt':
-                    self.multi_target = True
-
-                else:
-                    raise RuntimeError(f'MergeConfig {self.strategy}: Merge specification type at {index + 1} is unknown: {spec_ast["type"]}')
-
-            else:
-                raise RuntimeError(f'MergeConfig: Unrecognized strategy {self.strategy}')
-
-            if spec is not None:
-                self.spec_list.append(spec)
-
-        # Set REF/ALT status for SNVs
-        if self.refalt:
-
-            # No matcher allowed for REF/ALT (REF/ALT does the checking)
-            if self.default_matcher is not None:
-                raise RuntimeError(f'Default matcher is not supported for strategy {self.strategy}: REF and ALT are checked by SNV strategies')
-
-            for i in range(len(self.spec_list)):
-                spec = self.spec_list[i]
-
-                # Error if a matcher was defined
-                if spec.matcher is not None:
-                    raise RuntimeError(f'Matcher is not supported for merge specification {spec.spec_type}: REF and ALT are checked by SNV strategies')
-
-                # Assign refalt
-                spec.refalt = True
-
-        # Add default matcher
-        if self.default_matcher is not None:
-            for spec in self.spec_list:
-                if spec.matcher is None:
-                    spec.set_matcher(self.default_matcher, matcher_global=True)
-
-        # Set fields
-        # self.read_seq = any([spec.read_seq for spec in self.spec_list])
-        self.vcf_temp = any([spec.vcf_temp for spec in self.spec_list])
-
-        # Check parameter sanity
-        if self.extern_matcher and self.multi_target:
-            raise RuntimeError('MergeConfig: External matcher (Truvari, etc) is not compatible with multi-target (multitgt) matches')
-
-        return
-
-    def is_read_seq(self, svtype):
-        """
-        Determine if a sequence should be read for this MergeConfig. Returns true if any step requires an input sequence
-        for sequence comparisons. If any ParamSpec requires a VCF intermediate, this returns true if svtype is not SNV.
-
-        :param svtype: SV type to check (str) or a set of svtypes (set of str).
-
-        :return: `True` if sequence input is required.
-        """
-        return any([spec.is_read_seq(svtype) for spec in self.spec_list])
-
-    def any_match(self):
-        """
-        Return True if any merge spec has a matcher.
-
-        :return: True if any merge spec has a matcher.
-        """
-        return any([merge_spec.match_seq for merge_spec in self.spec_list])
-
-    def __repr__(self, pretty=False):
-
-        repr_str = 'MergeConfig(' + self.strategy
-
-        # Strings for each specification
-        spec_str = [
-            spec.__repr__(show_matcher=(not spec.matcher_global)) for spec in self.spec_list
-        ]
-
-        # Double colon separates strategy from specifications
-        if len(spec_str) > 0:
-            if pretty:
-                repr_str += '\n'
-            else:
-                repr_str += '::'
-
-        # Add specifications
-        if pretty:
-            repr_str += ''.join(['    {}\n'.format(val) for val in spec_str])
-        else:
-            repr_str += ':'.join(spec_str)
-
-        # Add global default matcher
-        if self.default_matcher is not None:
-            if pretty:
-                repr_str += '\n' if len(spec_str) == 0 else ''
-                repr_str += '    ' + self.default_matcher.__repr__() + '\n'
-            else:
-                if len(spec_str) > 0:
-                    repr_str += ':'
-
-                repr_str += self.default_matcher.__repr__()
-
-        repr_str += ')'
-
-        return repr_str
-
 
 #
 # ParamSpec
@@ -303,7 +104,7 @@ class ParamSpec(object):
         val_type, default, name,
         min_val=None, min_inclusive=True,
         max_val=None, max_inclusive=True,
-        unlimited_val=None
+        unlimited_val=None, list_type=None
     ):
         self.val_type = val_type
         self.default = default
@@ -313,6 +114,7 @@ class ParamSpec(object):
         self.max_val = max_val
         self.max_inclusive = max_inclusive
         self.unlimited_val = unlimited_val
+        self.list_type = list_type
 
         if self.val_type is None:
             raise RuntimeError('ParamSpec.__init__(): val_type may not be None')
@@ -320,44 +122,75 @@ class ParamSpec(object):
         if self.name is None:
             raise RuntimeError('ParamSpec.__init__(): name may not be None')
 
-    def check(self, param_tuple):
+    def check(self,
+              param_tuple: tuple
+    ) -> None:
         """
         Check a parameter tuple of (type, value, name).
 
         Type should match a key in TYPE_MATCHER. No values may be None.
         """
 
+        # Check parameter tuple
         if param_tuple is None:
-            raise RuntimeError('Cannot check paramters: None')
+            raise ValueError('Cannot check paramters: None')
 
         if len(param_tuple) != 3:
-            raise RuntimeError(f'Expected 3 parameters in param_tuple: Found {len(param_tuple)}')
+            raise ValueError(f'Expected 3 parameters in param_tuple: Found {len(param_tuple)}')
+
+        param_type, param_value, param_name = param_tuple
 
         # Check type
-        if param_tuple[0] not in TYPE_MATCHER[self.val_type]:
-            if param_tuple[0] not in TYPE_MATCHER.keys():
-                raise RuntimeError(f'BUG: Unrecognized type for parameter "{param_tuple[2]} = {param_tuple[1]}": {param_tuple[0]}')
+        if param_type not in TYPE_MATCHER[self.val_type]:
+            if param_type not in TYPE_MATCHER.keys():
+                raise RuntimeError(f'BUG: Unrecognized type for parameter "{param_name} = {param_value}": {param_type}')
             else:
                 allowed_types = ', '.join(sorted(TYPE_MATCHER[self.val_type]))
-                raise RuntimeError(f'Illegal type for "{param_tuple[2]} = {param_tuple[1]}": {param_tuple[0]}: expected {allowed_types}')
+                raise TypeError(f'Illegal type for "{param_name} = {param_value}": {param_type}: expected {allowed_types}')
 
-        # Check name and value
-        if param_tuple[0] != 'unlimited':
-            if param_tuple[1] is None:
-                raise RuntimeError(f'Illegal value for "{param_tuple[2]} = {param_tuple[1]}": None')
+        # Check list elements
+        if param_type == 'list' and self.list_type is not None:
+            bad_type_list = [
+                (i, param_element[i][0]) for i, param_element in enumerate(param_value)
+                    if TYPE_MATCHER.get(param_value[i][0], None) != self.list_type
+            ]
+
+            if bad_type_list:
+                found_types = ','.join(sorted(set(bt[1] for bt in bad_type_list)))
+                indexes = ','.join(str(bt[0]) for bt in bad_type_list)
+                vals = ','.join(str(bt[1]) for bt in bad_type_list)
+
+                raise TypeError(f'Illegal type for "{param_name} = {vals}" for list elements at indexs {indexes}: Expected type "{self.list_type}": Found {found_types}')
+
+            param_value = [param_element[1] for param_element in param_value]
 
             # Check bounds
-            if self.min_val is not None:
-                if param_tuple[1] < self.min_val or (param_tuple[1] == self.min_val and not self.min_inclusive):
-                    raise RuntimeError(f'Illegal range for "{param_tuple[2]} = {param_tuple[1]}": Minimum allowed value is {self.min_val} ({"inclusive" if self.min_inclusive else "exclusive"})')
+            for param_val_element in param_value:
+                if self.min_val is not None:
+                    if param_val_element < self.min_val or (param_val_element == self.min_val and not self.min_inclusive):
+                        raise ValueError(f'Illegal range for "{param_name} = {param_value}": Minimum allowed value is {self.min_val} ({"inclusive" if self.min_inclusive else "exclusive"})')
 
-            if self.max_val is not None:
-                if param_tuple[1] > self.max_val or (param_tuple[1] == self.max_val and not self.max_inclusive):
-                    raise RuntimeError(f'Illegal range for "{param_tuple[2]} = {param_tuple[1]}": Maximum allowed value is {self.max_val} ({"inclusive" if self.max_inclusive else "exclusive"})')
+                if self.max_val is not None:
+                    if param_val_element > self.max_val or (param_val_element == self.max_val and not self.max_inclusive):
+                        raise ValueError(f'Illegal range for "{param_name} = {param_value}": Maximum allowed value is {self.max_val} ({"inclusive" if self.max_inclusive else "exclusive"})')
 
-            return param_tuple[1]
-        else:
+        # Check name and value
+        if param_type == 'unlimited':
             return self.unlimited_val
+
+        if param_value is None:
+            raise ValueError(f'Illegal value for "{param_name} = {param_value}": None')
+
+        # Check bounds
+        if self.min_val is not None:
+            if param_value < self.min_val or (param_value == self.min_val and not self.min_inclusive):
+                raise ValueError(f'Illegal range for "{param_name} = {param_value}": Minimum allowed value is {self.min_val} ({"inclusive" if self.min_inclusive else "exclusive"})')
+
+        if self.max_val is not None:
+            if param_value > self.max_val or (param_value == self.max_val and not self.max_inclusive):
+                raise ValueError(f'Illegal range for "{param_name} = {param_value}": Maximum allowed value is {self.max_val} ({"inclusive" if self.max_inclusive else "exclusive"})')
+
+        return param_value
 
 
 #
@@ -489,7 +322,7 @@ class IntersectSpec(object):
             # Sequence match parameters
             self.matcher = None
             self.match_seq = False
-            self.aligner = None
+            self.match_score_model = None
             self.align_match_prop = None
             self.align_param = None
             self.matcher_global = False
@@ -507,11 +340,20 @@ class IntersectSpec(object):
         if not self.allow_matcher:
             raise RuntimeError(f'Specification type {self.spec_type}: Matcher is not allowed for this specification type')
 
+        # Check and set affine gap
+        if param_set_matcher.gap is not None:
+            if len(param_set_matcher.gap) == 0 or len(param_set_matcher.gap) % 2 != 0:
+                raise RuntimeError(f'Specification type {self.spec_type}: Invalid affine gap: Expected an even number of values: {param_set_matcher.gap}')
+
+            gap_tuples = [(param_set_matcher.gap[i], param_set_matcher.gap[i + 1]) for i in range(0, len(param_set_matcher.gap), 2)]
+        else:
+            gap_tuples = None
+
         # Create aligner and set matcher fields
         self.match_score_model = MatchScoreModel(
             match=param_set_matcher.match,
             mismatch=param_set_matcher.mismatch,
-            affine_gap=param_set_matcher.affine_gap,
+            affine_gap=gap_tuples,
             map_limit=param_set_matcher.limit,
             jaccard_kmer=param_set_matcher.ksize
         )
@@ -690,22 +532,6 @@ class IntersectSpecTruvari(IntersectSpec):
 
         return
 
-class IntersectSpecMultitgt(IntersectSpec):
-    """
-    Param set: Multi-target (allow target variants to match multiple sources).
-    """
-
-    def __init__(self, arg_list):
-        super().__init__(
-            'multitgt',
-            arg_list,
-            [
-            ],
-            False
-        )
-
-        return
-
 class IntersectSpecMatch(IntersectSpec):
     """
     Parameter set: Matcher specification objects.
@@ -717,10 +543,9 @@ class IntersectSpecMatch(IntersectSpec):
             arg_list,
             [
                 ParamSpec('num', DEFAULT_MATCHER_SCORE, 'score', 0.0, False, 1.0, True),
-                ParamSpec('num', 2.0, 'match', 0.0, False),
-                ParamSpec('num', -1.0, 'mismatch', None, None, 0.0, False),
-                ParamSpec('num', -1.0, 'open', None, None, 0.0, True),
-                ParamSpec('num', -0.25, 'extend', None, None, 0.0, True),
+                ParamSpec('num', DEFAULT_SCORE_MATCH, 'match', 0.0, False),
+                ParamSpec('num', DEFAULT_SCORE_MISMATCH, 'mismatch', None, None, 0.0, False),
+                ParamSpec('list', DEFAULT_SCORE_GAP, 'gap', None, None, 0.0, True, list_type='float'),
                 ParamSpec('int_u', 2000, 'limit', 0, True),
                 ParamSpec('int', 9, 'ksize', 1, True),
             ],
@@ -728,3 +553,213 @@ class IntersectSpecMatch(IntersectSpec):
         )
 
         return
+
+
+class IntersectConfig(object):
+    parser_ast: dict
+    strategy: str
+    spec_list: list[IntersectSpec]
+    default_matcher: IntersectSpecMatch
+    extern_matcher: bool
+    refalt: bool
+
+    """
+    A fully configured merger. Takes the AST output from the parser and generates a configuration object.
+    
+    :ivar parser_ast: AST output from the parser.
+    :ivar strategy: Intersect strategy.
+    :ivar spec_list: List of IntersectSpec objects. Each represents a merging stage.
+    :ivar default_matcher: Default matcher object applied to all stages.
+    :ivar extern_matcher: Set to True if an external matcher is used (e.g. Truvari).
+    :ivar refalt: Set to True if matching REF & ALT is used.
+    """
+
+    def __init__(self,
+                 intersect_params: str
+        ):
+        """
+        Parse intersect configuration parameters and create a configuration object.
+
+        :param intersect_params: Configuration parameter string.
+        """
+
+        intersect_config_parser = IntersectConfigParser()
+
+        try:
+            parser_ast = intersect_config_parser.parse(intersect_params)
+        except Exception as e:
+            raise RuntimeError(f'Error parsing intersect parameters "{intersect_params}": {e}')
+
+        # Check arguments
+        if parser_ast is None:
+            raise RuntimeError('MergeConfig: Cannot create a merge config object: parser_ast is None')
+
+        self.parser_ast = parser_ast
+
+        missing_keys = [val for val in ('strategy', 'spec_list') if val not in parser_ast.keys()]
+
+        if missing_keys:
+            raise RuntimeError('MergeConfig: Missing {} AST key(s): {}'.format(
+                len(missing_keys),
+                ', '.join(missing_keys)
+            ))
+
+        # Create an empty MergeConfig
+        self.strategy = parser_ast['strategy'].lower()
+
+        self.spec_list = list()
+        self.default_matcher = None
+
+        self.extern_matcher = False  # Set to True if an external matcher is used
+
+        # Set REF/ALT flag (check REF and ALT for SNVs) based on the strategy name
+        self.refalt = self.strategy in {'nrsnv', 'nrsnp'}
+
+        # Add specifications
+        for index in range(len(parser_ast['spec_list'])):
+            spec_ast = parser_ast['spec_list'][index]
+
+            # Check keys
+            missing_keys = [val for val in ('type', 'val_list') if val not in spec_ast.keys()]
+
+            if missing_keys:
+                raise RuntimeError('MergeConfig: Missing {} specification AST key(s) for specification at position {}: {}'.format(
+                    len(missing_keys),
+                    index + 1,
+                    ', '.join(missing_keys)
+                ))
+
+            # Process specification type
+            spec = None
+
+            if self.strategy == 'nr':
+                if spec_ast['type'] == 'exact':
+                    spec = IntersectSpecExact(spec_ast['val_list'])
+
+                elif spec_ast['type'] == 'ro':
+                    spec = IntersectSpecRo(spec_ast['val_list'])
+
+                elif spec_ast['type'] == 'szro':
+                    spec = IntersectSpecSzro(spec_ast['val_list'])
+
+                elif spec_ast['type'] == 'distance':
+                    spec = IntersectSpecDistance(spec_ast['val_list'])
+
+                elif spec_ast['type'] == 'truvari':
+                    spec = IntersectSpecTruvari(spec_ast['val_list'])
+                    self.extern_matcher = True
+
+                elif spec_ast['type'] == 'match':
+                    self.default_matcher = IntersectSpecMatch(spec_ast['val_list'])
+
+                else:
+                    raise RuntimeError(f'MergeConfig {self.strategy}: Merge specification type at {index + 1} is unknown: {spec_ast["type"]}')
+
+            elif self.strategy in {'nrsnv', 'nrsnp'}:
+                if spec_ast['type'] == 'exact':
+                    spec = IntersectSpecExact(spec_ast['val_list'])
+
+                elif spec_ast['type'] == 'distance':
+                    raise RuntimeError('IntersectSpecDistance is not yet implemented')
+                    #spec = IntersectSpecDistance(spec_ast['val_list'])
+
+                else:
+                    raise RuntimeError(f'MergeConfig {self.strategy}: Merge specification type at {index + 1} is unknown: {spec_ast["type"]}')
+
+            else:
+                raise RuntimeError(f'MergeConfig: Unrecognized strategy {self.strategy}')
+
+            if spec is not None:
+                self.spec_list.append(spec)
+
+        # Set REF/ALT status for SNVs
+        if self.refalt:
+
+            # No matcher allowed for REF/ALT (REF/ALT does the checking)
+            if self.default_matcher is not None:
+                raise RuntimeError(f'Default matcher is not supported for strategy {self.strategy}: REF and ALT are checked by SNV strategies')
+
+            for i in range(len(self.spec_list)):
+                spec = self.spec_list[i]
+
+                # Error if a matcher was defined
+                if spec.matcher is not None:
+                    raise RuntimeError(f'Matcher is not supported for merge specification {spec.spec_type}: REF and ALT are checked by SNV strategies')
+
+                # Assign refalt
+                spec.refalt = True
+
+        # Add default matcher
+        if self.default_matcher is not None:
+            for spec in self.spec_list:
+                if spec.matcher is None:
+                    spec.set_matcher(self.default_matcher, matcher_global=True)
+
+        return
+
+    def has_vcf_temp(self) -> bool:
+        """
+        Determine if any merge stage uses a VCF temporary file.
+
+        :return: True if any merge stage uses a VCF temporary file
+        """
+        return any([spec.vcf_temp for spec in self.spec_list])
+
+    def is_read_seq(self,
+                    svtype: str|set[str]
+    ) -> bool:
+        """
+        Determine if a sequence should be read for this MergeConfig. Returns true if any step requires an input sequence
+        for sequence comparisons. If any ParamSpec requires a VCF intermediate, this returns true if svtype is not SNV.
+
+        :param svtype: SV type to check (str) or a set of svtypes (set of str).
+
+        :return: `True` if sequence input is required.
+        """
+
+        return any([spec.is_read_seq(svtype) for spec in self.spec_list])
+
+    def any_match(self) -> bool:
+        """
+        Return True if any merge spec has a matcher.
+
+        :return: True if any merge spec has a matcher.
+        """
+        return any([merge_spec.match_seq for merge_spec in self.spec_list])
+
+    def __repr__(self, pretty=False):
+
+        repr_str = 'MergeConfig(' + self.strategy
+
+        # Strings for each specification
+        spec_str = [
+            spec.__repr__(show_matcher=(not spec.matcher_global)) for spec in self.spec_list
+        ]
+
+        # Double colon separates strategy from specifications
+        if len(spec_str) > 0:
+            if pretty:
+                repr_str += '\n'
+            else:
+                repr_str += '::'
+
+        # Add specifications
+        if pretty:
+            repr_str += ''.join(['    {}\n'.format(val) for val in spec_str])
+        else:
+            repr_str += ':'.join(spec_str)
+
+        # Add global default matcher
+        if self.default_matcher is not None:
+            if pretty:
+                repr_str += '\n' if len(spec_str) == 0 else ''
+                repr_str += '    ' + self.default_matcher.__repr__() + '\n'
+            else:
+                if len(spec_str) > 0:
+                    repr_str += ':'
+
+                repr_str += self.default_matcher.__repr__()
+
+        repr_str += ')'
+
+        return repr_str

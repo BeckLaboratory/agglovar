@@ -30,7 +30,7 @@ class IntersectConfigLexer(object):
         'KEYWORD'
     )
 
-    literals = [':', ';', ',', '=', '(', ')']
+    literals = [':', ';', ',', '=', '(', ')', '[', ']']
 
     # Parse numbers
     def parse_float(self,

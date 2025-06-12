@@ -2,7 +2,7 @@ import ply.yacc
 
 from .lexer import IntersectConfigLexer
 
-__all__ = []
+__all__ = ['IntersectConfigParser']
 
 class IntersectConfigParser(object):
     """
@@ -111,6 +111,7 @@ class IntersectConfigParser(object):
                       | t_float
                       | t_unlimited
                       | t_match
+                      | t_primitive_list
         """
         p[0] = p[1]
 
@@ -134,6 +135,32 @@ class IntersectConfigParser(object):
         """
         p[0] = [('unlimited', None, None)]
 
+    def p_t_primitive_list(self, p):
+        """
+        t_primitive_list : '[' primitive_list_elements ']'
+        """
+        p[0] = [('list', p[2], None)]
+
+    def p_primitive_list_elements(self, p):
+        """
+        primitive_list_elements : primitive_list_element
+                                | primitive_list_element ',' primitive_list_elements
+                                | ',' primitive_list_elements
+        """
+
+        if len(p) == 2:
+            p[0] = [p[1]]
+        elif len(p) == 4:
+            p[0] = [p[1]] + p[3]
+        elif len(p) == 3:
+            p[0] = p[2]
+
+    def p_primitive_list_element(self, p):
+        """
+        primitive_list_element : t_int
+                               | t_float
+        """
+        p[0] = p[1]
 
     #
     # Values (keyed or primitive)
