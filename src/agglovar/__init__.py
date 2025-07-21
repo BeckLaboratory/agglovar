@@ -1,5 +1,5 @@
-__all__ = ['kmer', 'intersect', 'seqmatch']
-
+from . import align
+from . import join
 from . import kmer
-from . import intersect
+from . import schema
 from . import seqmatch

@@ -9,6 +9,8 @@ Agglovar is designed to replace the SV-Pop library (https://github.com/EichlerLa
 
 The name Agglovar is a portmanteau of the latin word "agglomerare" (to gather) and "variant" (genomic variants).
 
-## Alpha
+## Alpha release
 
-Agglovar is currently in development and is not yet ready for production.
+The "a" in the version number indicates that Agglovar is an alpha version and is still under active development.
+
+The first full release will be version 1.0.0.

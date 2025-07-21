@@ -4,11 +4,22 @@ Rountines for generating dotplots.
 
 import collections
 import numpy as np
-
-import matplotlib as mpl
-import matplotlib.pyplot as plt
+import typing
 
 from . import util as kmer_util
+
+# Get type hints for optional matplotlib objects
+t_mpl_Figure = typing.Any
+
+try:
+    import matplotlib.pyplot
+    t_mpl_Figure = matplotlib.pyplot.Figure
+except ImportError:
+    pass
+
+#
+# Functions
+#
 
 def dotplot(
         seq_x: str,
@@ -16,7 +27,7 @@ def dotplot(
         config: dict=None,
         title: str=None,
         anno_list: list[dict]=None
-) -> plt.Figure:
+) -> t_mpl_Figure:
     """
     Generate a dotplot for two sequences.
 
@@ -28,6 +39,12 @@ def dotplot(
 
     :return: A matplotlib figure.
     """
+
+    try:
+        import matplotlib as mpl
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise ImportError('Optional package "matplotlib" is missing: Try installing agglovar[plot] or agglovar[all].')
 
     if config is None:
         config = dict()
@@ -100,12 +117,12 @@ def dotplot(
     y_kmer_fwd = collections.defaultdict(set)
     y_kmer_rev = collections.defaultdict(set)
 
-    for kmer, index in kmer_util.stream(seq_y, kutil, True):
+    for kmer, index in kmer_util.stream_index(seq_y, kutil):
         y_kmer_fwd[kmer].add(index)
         y_kmer_rev[kutil.rev_complement(kmer)].add(index)
 
     # Get X k-mers
-    x_mer_index = list(x_tuple for x_tuple in kmer_util.stream(seq_x, kutil, True))
+    x_mer_index = list(x_tuple for x_tuple in kmer_util.stream_index(seq_x, kutil))
 
     # Get dotplot points and limits
     points_fwd = {(x + start_x, y + start_y) for kmer, x in x_mer_index for y in y_kmer_fwd[kmer]}

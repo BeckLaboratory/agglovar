@@ -90,25 +90,6 @@ class MatchScoreModel:
 
         return
 
-    # def __getattr__(self,
-    #     name: str
-    # ) -> typing.Any:
-    #     """
-    #     Get attribute.
-    #
-    #     :param name: Attribute name.
-    #     :return: Value
-    #     :raises AttributeError: Unknown attribute.
-    #     """
-    #
-    #     if self.score_model is not None:
-    #         try:
-    #             return getattr(self.score_model, name)
-    #         except AttributeError:
-    #             pass
-    #
-    #     raise AttributeError(f'Unknown attribute: {name}')
-
     def score_align(self,
         seq_a: str,
         seq_b: str
@@ -124,7 +105,7 @@ class MatchScoreModel:
         :return: Maximum alignment score.
         """
 
-        align = edlib.align(seq_a, seq_b, mode='HW', task='path')
+        align = edlib.align(seq_a.upper(), seq_b.upper(), mode='HW', task='path')
 
         return self.score_model.score_operations(
             align_op.cigar_as_array(align['cigar'])
@@ -242,29 +223,39 @@ class MatchScoreModel:
         :param seq_a: Subject sequence.
         :param seq_b: Query sequence.
 
-        :return: Alignment proportion with seq_b duplicated head to tail.
+        :return: Alignment proportion with seq_b duplicated head to tail. If either sequence is None or empty, returns
+            0.0.
         """
+
+        if seq_a is None or seq_b is None:
+            return 0.0
+
+        if len(seq_a) > len(seq_b):
+            seq_a, seq_b = seq_b, seq_a
 
         max_len = np.max([len(seq_a), len(seq_b)])
         min_len = np.min([len(seq_a), len(seq_b)])
+
+        if min_len == 0:
+            return 0.0
 
         if self.map_limit is None or max_len <= self.map_limit:
 
             if min_len >= self.rotate_min:
                 # Align with rotation
-                return min([
+                return np.clip(
                     np.min([
                         self.score_align(seq_a, seq_b + seq_b), min_len * self.score_model.score_match
                     ]) / (max_len * self.score_model.score_match),
-                    1.0
-                ])
+                    0.0, 1.0
+                )
 
             else:
                 # Align without rotation
-                return min([
+                return np.clip(
                     self.score_align(seq_a, seq_b) / (max_len * self.score_model.score_match),
-                    1.0
-                ])
+                    0.0, 1.0
+                )
 
         elif min_len > self.jaccard_kmer:
             return jaccard_distance(seq_a, seq_b, self.jaccard_kmer)
@@ -321,7 +312,7 @@ def jaccard_distance(
         [np.min([count1[key], count2[key]]) for key in key_set]  # Matching k-mers
     ) / np.sum(
         [np.max([count1[key], count2[key]]) for key in key_set]  # All k-mers
-    ) if len(count1) > 0 and len(count2) > 0 else 0
+    ) if len(count1) > 0 and len(count2) > 0 else 0.0
 
 
 class ScoreTraceNode:
