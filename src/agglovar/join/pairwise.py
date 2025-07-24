@@ -2,26 +2,17 @@
 Get nearest variant by SVLEN overlap. Used for merging and comparing callsets.
 """
 
+from dataclasses import dataclass
+from dataclasses import field
 import collections
 import polars as pl
+from warnings import warn
 
+from typing import Iterable
 from typing import Generator
 
 from .. import seqmatch
 from .. import schema
-
-COL_MAP_BED = {
-    '#CHROM': 'chrom',
-    'POS': 'pos',
-    'END': 'end',
-    'SVTYPE': 'svtype',
-    'SVLEN': 'svlen',
-    'ID': 'id',
-    'REF': 'ref',
-    'ALT': 'alt',
-    'SEQ': 'seq',
-    'MERGE_SAMPLES': 'merge_samples'
-}
 
 DEFAULT_PRIORITY_MATCH =[
     ('ro', 0.2),
@@ -42,38 +33,20 @@ DEFAULT_PRIORITY = {
     'default': DEFAULT_PRIORITY_MATCH
 }
 
-KNOWN_COL_SET = {
-    'chrom', 'pos', 'end', 'id', 'svtype', 'svlen', 'ref', 'alt', 'seq'
+# Reserved columns are added automatically to input tables
+RESERVED_COLUMNS = {
+    'index', 'end_ro'
 }
 
+# Default size to chunk tables before joining
+DEFAULT_CHUNK_SIZE = 10_000
 
 #
 # Intersect class definition
 #
 
+@dataclass(frozen=True)
 class PairwiseIntersect(object):
-    ro_min: float
-    size_ro_min: float
-    offset_max: int
-    offset_prop_max: float
-    match_prop_min: float
-    match_ref: bool
-    match_alt: bool
-    col_map: dict[str,str]
-    match_score_model: seqmatch.MatchScoreModel
-    force_end_ro: bool
-    chunk_size: int
-    chunk_range: dict[str,list[pl.Expr]]
-    join_predicates: list[pl.Expr]
-    join_filters: list[pl.Expr]
-    expected_cols: list[str]
-    expr_overlap_ro: pl.Expr
-    expr_szro: pl.Expr
-    expr_offset_dist: pl.Expr
-    expr_offset_prop: pl.Expr
-    expr_match_prop: pl.Expr
-    col_list: list[pl.Expr]
-
     """
     Pairwise intersect class.
 
@@ -104,17 +77,18 @@ class PairwiseIntersect(object):
         match_prop_min to 0.0 will compute the match_prop values, but will not filter by it.
 
     Attributes:
+        **Configuration Attributes:**
         ro_min: Minimum reciprocal overlap for allowed matches. If 0.0, then any overlap matches.
         size_ro_min: Reciprocal length proportion of allowed matches. If `match_prop_min` is set and the
             value of this parameter is `None` or is less than `match_prop_min`, then it is set to `match_prop_min` since
             this value represents the lower-bound of allowed match proportions.
         offset_max: Maximum offset allowed (minimum of start or end position distance).
         offset_prop_max: Maximum size-offset (offset / svlen) allowed.
-        match_prop_min: Minimum matched base proportion in alignment or None to not match.
         match_ref: "REF" column must match between two variants.
         match_alt: "ALT" column must match between two variants.
-        col_map: Map column names from input variant tables by this dictionary. May be string "bed" to use default
-            BED column names.
+        match_prop_min: Minimum matched base proportion in alignment or None to not match.
+
+        **Advanced Configuration Attributes:**
         match_score_model: Configured model for scoring similarity between pairs of sequences. If `None` and
             `match_prop_min` is set, then a default aligner will be used.
         force_end_ro: By default, reciprocal overlap is calculated with the end position set to the start
@@ -125,9 +99,20 @@ class PairwiseIntersect(object):
             variants that may intersect with variants in the chunk. If None, each chromosome is a single chunk, which will
             lead to a combinatorial explosion unless offset_max is 0 (the join operation is optimized without chunking in
             this case). All intersects are first chunked by chromosome, then by this chunk size.
-        match_seq: Set to True if sequence matching is required (i.e. match_prop_min is not None).
-        expected_cols: Expected column names in input variant tables without "_a" or "_b" suffixes appended during
-            table preparation.
+
+        **Table and Join Control:**
+        join_predicates: List of expressions to be applied during the table join. These expressions are arguments to
+            pl.join_where(). These expressions operate on columns of df_a and df_b joined into one record where all
+            columns from df_a have the suffix "_a" and all columns from df_b have the suffix "_b".
+        join_filters: List of expressions to be applied after the join is performed. These expressions operate on the
+            columns of the joined table (see join table columns above).
+        join_cols: List of columns to include in the join table.
+
+        **Class Internal Attributes:**
+        match_seq: True if sequence matching is performed (i.e. match_prop_min is not None).
+        expected_cols: A list of columns expected to be found in df_a and df_b without "_a" or "_b" suffixes. This is
+            set based on parameters needed to perform the join. For example, if sequence matching is required, then
+            "seq" will be in this list, and if "seq" does not exist in both df_a and df_b, then an error is raised.
         chunk_range: A dict of keys to a list of expressions used to subset df_b to include only variants that may
             match variants in a df_a chunk. Keys are formatted as "field_limit" where "limit" is "min" or "max" (e.g.
             "pos_min" is the minimum value for "pos"). The list of expressions associated with a key are executed on
@@ -139,149 +124,352 @@ class PairwiseIntersect(object):
             This allows non-trivial chunking of df_b necessary to restrict combinatorial explosion for certain
             parameters. For example, if reciprocal overlap (ro_min) is set, the maximum position in df_b is
             determined by the minimum end position in df_a (i.e. "pos_max" will contain "pl.col('end_ro_a'))".
-        join_predicates: List of expressions to be applied during the table join. These expressions are arguments to
-            pl.join_where(). These expressions operate on columns of df_a and df_b joined into one record where all
-            columns from df_a have the suffix "_a" and all columns from df_b have the suffix "_b".
-        join_filters: List of expressions to be applied after the join is performed. These expressions operate on the
-            columns of the joined table (see join table columns above).
-        expected_cols: A list of columns expected to be found in df_a and df_b. This is set based on parameters
-            needed to perform the join. For example, if sequence matching is required, then "seq" will be in this list.
-        expr_overlap_ro: Expression for reciprocal overlap.
-        expr_szro: Expression for reciprocal size overlap.
-        expr_offset_dist: Expression for offset distance.
-        expr_offset_prop: Expression for offset proportion.
-        expr_match_prop: Expression for match proportion.
-        col_list: List of columns in the join table.
     """
 
-    def __init__(
+    # Configuration Attributes
+    ro_min: float = field(default=None)
+    size_ro_min: float = field(default=None)
+    offset_max: int = field(default=None)
+    offset_prop_max: float = field(default=None)
+    match_ref: bool = field(default=False)
+    match_alt: bool = field(default=False)
+    match_prop_min: float = field(default=None)
+
+    # Advanced Configuration Attributes
+    match_score_model: seqmatch.MatchScoreModel = field(default=None)
+    force_end_ro: bool = field(default=False)
+    chunk_size: int = field(default=DEFAULT_CHUNK_SIZE)
+
+    # Table and Join Control
+    join_predicates: list[pl.Expr] = field(default_factory=list, init=False, repr=False)
+    join_filters: list[pl.Expr] = field(default_factory=list, init=False, repr=False)
+    join_cols: list[pl.Expr] = field(default_factory=list, init=False,repr=False)
+
+    # Class Internal Attributes
+    match_seq: bool = field(default=False, init=False, repr=False)
+    expected_cols: set[str] = field(default_factory=lambda: {'chrom'}, init=False, repr=False)
+    chunk_range: dict[tuple[str, str], list[pl.Expr]] = field(default_factory=collections.defaultdict, init=False, repr=False)
+
+    def __post_init__(self):
+
+        #
+        # Join Table Expressions
+        #
+
+        expr_overlap_ro = (
+            (
+                (
+                    pl.min_horizontal(
+                        [pl.col('end_ro_a'), pl.col('end_ro_b')]
+                    )
+                    - pl.max_horizontal(
+                        [pl.col('pos_a'), pl.col('pos_b')]
+                    )
+                ) / (
+                    pl.max_horizontal([pl.col('svlen_a'), pl.col('svlen_b')])
+                )
+            )
+            .clip(0.0, 1.0)
+            .cast(pl.Float32)
+        )
+
+        expr_szro = (
+            (
+                (
+                    pl.min_horizontal([pl.col('svlen_a'), pl.col('svlen_b')])
+                ) / (
+                    pl.max_horizontal([pl.col('svlen_a'), pl.col('svlen_b')])
+                )
+            )
+            .cast(pl.Float32)
+        )
+
+        expr_offset_dist = (
+            pl.max_horizontal(
+                (pl.col('pos_a') - pl.col('pos_b')).abs(),
+                (pl.col('end_a') - pl.col('end_b')).abs()
+            )
+            .cast(pl.Int32)
+        )
+
+        expr_offset_prop = (
+            (
+                expr_offset_dist / pl.min_horizontal([pl.col('svlen_a'), pl.col('svlen_b')])
+            )
+            .cast(pl.Float32)
+        )
+
+        expr_match_prop = (
+            pl.struct(
+                pl.col('seq_a'), pl.col('seq_b')
+            )
+            .map_elements(
+                lambda s: self.match_score_model.match_prop(s['seq_a'], s['seq_b']),
+                return_dtype=pl.Float32
+            )
+        ) if self.match_prop_min is not None else (
+            pl.lit(None).cast(pl.Float32)
+        )
+
+
+        #
+        # Configuration Attributes
+        #
+
+        # Check: ro_min
+        if self.ro_min is not None:
+            try:
+                object.__setattr__(self, 'ro_min', float(self.ro_min))
+            except ValueError:
+                raise ValueError(f'Reciprocal-overlap parameter (ro_min) is not a number: {self.ro_min}')
+
+            if not 0.0 <= self.ro_min <= 1.0:
+                raise ValueError(f'Reciprocal-overlap parameter (ro_min) must be between 0.0 and 1.0 (inclusive): {self.ro_min}')
+
+            self.append_join_predicates(
+                expr_overlap_ro >= self.ro_min
+            )
+
+            # self.append_join_filters(
+            #     pl.col('ro') >= ro_min
+            # )
+
+            self._append_chunk_range('pos', 'max', pl.col('end_ro_a'))
+            self._append_chunk_range('end_ro', 'min', pl.col('pos_a'))
+
+        # Check: size_ro_min
+        if self.size_ro_min is not None:
+            try:
+                object.__setattr__(self, 'size_ro_min', float(self.size_ro_min))
+            except ValueError:
+                raise ValueError(f'Size-reciprocal-overlap parameter (size_ro_min) is not a number: {self.size_ro_min}')
+
+            if not 0.0 < self.size_ro_min <= 1.0:
+                raise ValueError(f'Size-reciprocal-overlap parameter (size_ro_min) must be between 0.0 (exclusive) and 1.0 (inclusive): {self.size_ro_min}')
+
+            self.append_join_predicates(
+                expr_szro >= self.size_ro_min
+            )
+
+            self._append_chunk_range('svlen', 'min', pl.col('svlen_a') * self.size_ro_min)
+            self._append_chunk_range('svlen', 'max', pl.col('svlen_a') * (1 / self.size_ro_min))
+
+        # Check: offset_max
+        if self.offset_max is not None:
+            try:
+                object.__setattr__(self, 'offset_max', int(self.offset_max))
+            except ValueError:
+                raise ValueError(f'Offset-max parameter (offset_max) is not an integer: {self.offset_max}')
+
+            if self.offset_max < 0:
+                raise ValueError(f'Offset-max parameter (offset_max) must not be negative: {self.offset_max}')
+
+            if self.offset_max == 0:
+                self.append_join_predicates([  # Very fast joins on equality
+                    pl.col('pos_a') == pl.col('pos_b'),
+                    pl.col('end_a') == pl.col('end_b')
+                ])
+            else:
+                self.append_join_predicates(
+                    expr_offset_dist <= self.offset_max
+                )
+
+            self._append_chunk_range('pos', 'min', pl.col('pos_a') - self.offset_max)
+            self._append_chunk_range('end', 'max', pl.col('end_a') + self.offset_max)
+
+        # Check: offset_prop_max
+        if self.offset_prop_max is not None:
+            try:
+                object.__setattr__(self, 'offset_prop_max', float(self.offset_prop_max))
+            except ValueError:
+                raise ValueError(f'Size-offset-max parameter (offset_prop_max) is not a number: {self.offset_prop_max}')
+
+            if self.offset_prop_max < 0.0:
+                raise ValueError(f'Size-offset-max parameter (offset_prop_max) must not be negative: {self.offset_prop_max}')
+
+            self.append_join_predicates(
+                expr_offset_prop <= self.offset_prop_max
+            )
+
+            self._append_chunk_range('pos', 'min', pl.col('pos_a') - pl.col('svlen_a') * self.offset_prop_max)
+            self._append_chunk_range('end', 'max', pl.col('end_a') + pl.col('svlen_a') * self.offset_prop_max)
+
+        # Check: match_ref
+        if not isinstance(self.match_ref, bool):
+            raise ValueError(f'Match reference allele (match_ref) must be a boolean: {type(self.match_ref)}')
+
+        if self.match_ref:
+            self.append_join_predicates(
+                pl.col('ref_a') == pl.col('ref_b')
+            )
+
+        # Check: match_alt
+        if not isinstance(self.match_alt, bool):
+            raise ValueError(f'Match alternate allele (match_alt) must be a boolean: {type(self.match_alt)}')
+
+        if self.match_alt:
+            self.append_join_predicates(
+                pl.col('alt_a') == pl.col('alt_b')
+            )
+
+        # Check: match_prop_min
+        if self.match_prop_min is not None:
+            try:
+                object.__setattr__(self, 'match_prop_min', float(self.match_prop_min))
+            except ValueError:
+                raise ValueError(f'Alignment proportion (match_prop_min) must be a number: ({type(self.match_prop_min)})')
+
+            if not 0.0 <= self.match_prop_min <= 1.0:
+                raise ValueError(f'Alignment proportion (match_prop_min) must be between 0.0 and 1.0 (inclusive): {self.match_prop_min}')
+
+            if self.match_prop_min > 0.0:
+                self.append_join_filters(
+                    pl.col('match_prop') >= self.match_prop_min
+                )
+
+
+        #
+        # Advanced Configuration Attributes
+        #
+
+        # Check: match_score_model
+        if self.match_prop_min is not None:
+            if self.match_score_model is None:
+                object.__setattr__(self, 'match_score_model', seqmatch.MatchScoreModel())
+            else:
+                if not isinstance(self.match_score_model, seqmatch.MatchScoreModel):
+                    raise ValueError(f'Alignment model (match_score_model) must be a seqmatch.MatchScoreModel: {type(self.match_score_model)}')
+
+        # Check: force_end_ro
+        if not isinstance(self.force_end_ro, bool):
+            raise ValueError(f'Force end overlap (force_end_ro) must be a boolean: {type(self.force_end_ro)}')
+
+        # Check: chunk_size
+        try:
+            object.__setattr__(self, 'chunk_size', int(self.chunk_size))
+        except ValueError:
+            raise ValueError(f'Chunk size (chunk_size) is not an integer: {self.chunk_size}')
+
+        if self.chunk_size < 0:
+            raise ValueError(f'Chunk size (chunk_size) must not be negative: {self.chunk_size}')
+
+
+        #
+        # Class Internal Attributes
+        #
+
+        if self.match_prop_min is not None:
+            object.__setattr__(self, 'match_seq', True)
+
+        # Set join columns
+        self.append_join_cols([
+            pl.col('index_a'),
+            pl.col('index_b'),
+            pl.col('id_a'),
+            pl.col('id_b'),
+            expr_overlap_ro.alias('ro'),
+            expr_offset_dist.alias('offset_dist'),
+            expr_offset_prop.alias('offset_prop'),
+            expr_szro.alias('size_ro'),
+            expr_match_prop.alias('match_prop')
+        ])
+
+    def append_join_predicates(self, expr: Iterable[pl.Expr]|pl.Expr) -> None:
+        """
+        Append expressions to a list of join predicates given as arguments to pl.join_where(). This class will
+        construct a list of join predicates from the constructor arguments, but additional join control may be
+        added here.
+
+        Warning: Adding predicates may alter the join results so that they are not reproducible based on join
+        arguments. Use with caution.
+
+        :param expr: An expression or list of expressions.
+        """
+
+        if isinstance(expr, pl.Expr):
+            expr = [expr]
+
+        self._add_expected_cols(expr)
+        self.join_predicates.extend(expr)
+
+    def append_join_filters(self, expr: Iterable[pl.Expr]|pl.Expr) -> None:
+        """
+        Append expressions to a list of join filters applied to the join table immediately after the join through
+        pl.filter().
+
+        Warning: Adding filters may alter the join results so that they are not reproducible based on join
+        arguments. Use with caution.
+
+        :param expr: An expression or list of expressions.
+        """
+
+        if isinstance(expr, pl.Expr):
+            expr = [expr]
+
+        self.join_filters.extend(expr)
+
+    def append_join_cols(self, expr: Iterable[pl.Expr]|pl.Expr) -> None:
+        """
+        Append expressions to the list of columns included in the join table. These columns will be appended to the
+        standard join table columns. Each expression should name the column it creates using ".alias()" if necessary.
+        These columns do not affect the join itself, just the columns that appear in the join table.
+
+        For example, to retain the "pos" column from df_a and df_b, then append "pl.col('pos_a')" and "pl.col('pos_b')".
+        If you wanted to set a flag for whether the variant in df_a comes before df_b, then a new columns could be
+        added: "(pl.col('pos_a') <= pl.col('pos_b')).alias('left_a')"
+
+        :param expr: Expression or list of expressions.
+        """
+
+        if isinstance(expr, pl.Expr):
+            expr = [expr]
+
+        self._add_expected_cols(expr)
+        self.join_cols.extend(expr)
+
+    def _add_expected_cols(self, expr: Iterable[pl.Expr]|pl.Expr) -> None:
+        """
+        Inspect expressions and add each required column to the set of expected columns in the source dataframe.
+
+        :param expr: List of expressions.
+        """
+
+        if isinstance(expr, pl.Expr):
+            expr = [expr]
+
+        for e in expr:
+            for col_name in e.meta.root_names():
+                if not col_name.endswith('_a') and not col_name.endswith('_b'):
+                    raise ValueError(f'Expected column name to end with "_a" or "_b": Found column "{col_name}" in expression "{e}"')
+
+                col_name = col_name[:-2]
+
+                if col_name not in RESERVED_COLUMNS:
+                    self.expected_cols.add(col_name)
+
+    def _append_chunk_range(
             self,
-            ro_min: float=None,
-            size_ro_min: float=None,
-            offset_max: int=None,
-            offset_prop_max: float=None,
-            match_prop_min: float=None,
-            match_ref: bool=False,
-            match_alt: bool=False,
-            col_map: dict[str,str]=None,
-            match_score_model: seqmatch.MatchScoreModel=None,
-            force_end_ro: bool=False,
-            chunk_size: int=10_000,
-            join_predicates: list[pl.Expr]=None,
-            join_filters: list[pl.Expr]=None,
-            col_list: list[pl.Expr]=None
-    ):
-            """
-            Find all pairs of variants in two sources that meet a set of criteria.
+            key: str,
+            limit: str,
+            expr: pl.Expr
+    ) -> None:
 
-            The columns expected in `df_a` and `df_b` are:
-            * chrom: Variant chromosome.
-            * pos: Variant position.
-            * end: End position. If missing, is set to pos + svlen.
-            * svlen: Variant length.
-            * id: Variant ID. If missing or empty, will be generated using string "VarIdx" with the record index appended.
-            * ref: Optional, required if `match_ref`.
-            * alt: Optional, required if `match_alt`.
-            * seq: Optional, required if `match_prop_min`.
+        if limit not in {'min', 'max'}:
+            raise ValueError(f'Limit must be "min" or "max": {limit}')
 
-            Columns in returned DataFrame:
-            * index_a: Row index in `df_a`.
-            * index_b: Row index in `df_b`.
-            * id_a: Record id in `df_a`.
-            * id_b: Record id in `df_b`.
-            * ro: Reciprocal overlap if variants intersect.
-            * size_ro: Size reciprocal overlap (Max RO if variants were shifted to maximally intersect).
-            * offset_dist: Minimum of start position distance and end position distance.
-            * offset_prop: Offset / variant length.
-            * match_prop: Proportion of an alignment/match score between two sequences (from `df_a` and `df_b`) divided by the
-                maximum match score if sequences were identical. If `match_prop_min` is None, this column contains only null
-                values.
+        if not (key := key.strip() if key else None):
+            raise ValueError(f'Key must not be empty')
 
-            :param ro_min: Minimum reciprocal overlap for allowed matches. If 0.0, then any overlap matches.
-            :param size_ro_min: Reciprocal length proportion of allowed matches. If `match_prop_min` is set and the
-                value of this parameter is `None` or is less than `match_prop_min`, then it is set to `match_prop_min` since
-                this value represents the lower-bound of allowed match proportions.
-            :param offset_max: Maximum offset allowed (minimum of start or end position distance).
-            :param offset_prop_max: Maximum size-offset (offset / svlen) allowed.
-            :param match_prop_min: Minimum matched base proportion in alignment or None to not match.
-            :param match_ref: "REF" column must match between two variants.
-            :param match_alt: "ALT" column must match between two variants.
-            :param col_map: Map column names from input dataframes by this dictionary. May be string "bed" to use default
-                BED column names.
-            :param match_score_model: Configured model for scoring similarity between pairs of sequences. If `None` and
-                `match_prop_min` is set, then a default aligner will be used.
-            :param force_end_ro: By default, reciprocal overlap is calculated with the end position set to the start
-                position plus the variant length. For all variants except insertions, this will typically match the end value
-                in the source DataFrame. If `True`, the end position in the DataFrame is also used for reciprocal overlap
-                without changes. Typically, this option should not be used and will break reciprocal overlap for insertions.
-            :param chunk_size: Chunk df_a into partitions of this size, and for each chunk, subset df_b to include only
-                variants that may intersect with variants in the chunk. If None, each chromosome is a single chunk, which will
-                lead to a combinatorial explosion unless offset_max is 0 (the join operation is optimized without chunking in
-                this case). All intersects are first chunked by chromosome, then by this chunk size. The default chunk
-                has been tested to work well joining millions of SNV variants.
-            :param join_predicates: List of predicates to join on (e.g. `pl.col('pos_a') == pl.col('pos_b')`). This
-                should not be set for most joins, it is automatically constructed by the parameters above.
-            :param join_filters: List of predicates to filter on (e.g. `pl.col('pos_a') > pl.col('pos_b')`). This
-                should not be set for most joins, it is automatically constructed by the parameters above.
-            :param col_list: Append these columns to the join table. These may be used to retain columns that would
-                normally be dropped (e.g. "pl.col('id_a')") or to compute new ones
-                (e.g. "(pl.col('pos_b') > pl.col('pos_a').alias('greater_b')"). If custom filters in join_filters use
-                columns that are not in the default join table, then they must be included in this list. This should not
-                be set for most joins.
+        if key not in RESERVED_COLUMNS:
+            self.expected_cols.add(key)
 
-            :return: An iterator of LazyFrames for each chunk.
-            """
+        self._add_expected_cols(expr)
 
-            # Set attributes
-            self.ro_min = ro_min
-            self.size_ro_min = size_ro_min
-            self.offset_max = offset_max
-            self.offset_prop_max = offset_prop_max
-            self.match_prop_min = match_prop_min
-            self.match_ref = match_ref
-            self.match_alt = match_alt
-            self.col_map = col_map
-            self.match_score_model = match_score_model
-            self.force_end_ro = force_end_ro
-            self.chunk_size = chunk_size
-            self.chunk_range = None  # Set by _set_predicates()
-            self.join_predicates = join_predicates
-            self.join_filters = join_filters
+        if (key, limit) not in self.chunk_range:
+            self.chunk_range[key, limit] = []
 
-            # Expected columns (set by _set_expected_cols())
-            self.expected_cols = None
+        self.chunk_range[key, limit].append(expr)
 
-            # Join expressions (set by _set_join_exprs())
-            self.expr_overlap_ro = None
-            self.expr_szro = None
-            self.expr_offset_dist = None
-            self.expr_offset_prop = None
-            self.expr_match_prop = None
-
-            # Check and normalize parameters
-            self._check_params()
-
-            # Set expressions used by join
-            self._set_join_exprs()
-
-            # Set predicates and filters (post-join filters and chunk filters)
-            self._set_predicates()
-
-            # Set expected columns from input tables
-            self._set_expected_cols()
-
-            # Set expected join columns
-            self.col_list = [
-                pl.col('index_a'),
-                pl.col('index_b'),
-                pl.col('id_a'),
-                pl.col('id_b'),
-                self.expr_overlap_ro.alias('ro'),
-                self.expr_offset_dist.alias('offset_dist'),
-                self.expr_offset_prop.alias('offset_prop'),
-                self.expr_szro.alias('size_ro'),
-                self.expr_match_prop.alias('match_prop')
-            ] + (col_list if col_list is not None else [])
 
     def join_iter(
             self,
@@ -300,6 +488,9 @@ class PairwiseIntersect(object):
             # Prepare tables
             df_a, df_b = self.prepare_tables(df_a, df_b)
 
+            # Get join expressions
+            join_predicates = self.join_predicates if len(self.join_predicates) > 0 else [pl.lit(True)]
+            join_filters = self.join_filters if len(self.join_filters) > 0 else [pl.lit(True)]
 
             # Join per chromosome
             chrom_list = df_a.select('chrom_a').unique().collect().to_series().sort().to_list()
@@ -325,19 +516,19 @@ class PairwiseIntersect(object):
                     i_a_end = min(i_a + chunk_size_chrom, range_a_max)
 
                     df_a_chunk = chunk_index(df_a, i_a, i_a_end)
-                    df_b_chunk = chunk_relative(df_a_chunk, df_b, chrom, self.chunk_range)
+                    df_b_chunk = self._chunk_relative(df_a_chunk, df_b, chrom)
 
                     yield (
                         df_a_chunk
                         .join_where(
                             df_b_chunk,
-                            *self.join_predicates
+                            *join_predicates
                         )
                         .select(
-                            *self.col_list
+                            *self.join_cols
                         )
                         .filter(
-                            *self.join_filters
+                            *join_filters
                         )
                         .sort(
                             ['index_a', 'index_b']
@@ -364,280 +555,6 @@ class PairwiseIntersect(object):
             self.join_iter(df_a, df_b)
         )
 
-
-    def _check_params(self) -> None:
-        """
-        Check parameters and set defaults. This should be called at the end of the constructor.
-        """
-
-        # Column name mapping
-        if isinstance(self.col_map, str) and self.col_map.strip().lower() == 'bed':
-            self.col_map = COL_MAP_BED
-
-        # Check: ro_min
-        if self.ro_min is not None:
-            try:
-                self.ro_min = float(self.ro_min)
-            except ValueError:
-                raise ValueError(f'Reciprocal-overlap parameter (ro_min) is not a floating point number: {self.ro_min}')
-
-            if self.ro_min < 0.0 or self.ro_min > 1.0:
-                raise ValueError(f'Reciprocal-overlap parameter (ro_min) must be between 0.0 and 1.0 (inclusive): {self.ro_min}')
-
-        # Check: size_ro_min
-        if self.size_ro_min is not None:
-            try:
-                self.size_ro_min = float(self.size_ro_min)
-            except ValueError:
-                raise ValueError(f'Size-reciprocal-overlap parameter (size_ro_min) is not a floating point number: {self.size_ro_min}')
-
-            if self.size_ro_min <= 0.0 or self.size_ro_min > 1.0:
-                raise ValueError(f'Size-reciprocal-overlap parameter (size_ro_min) must be between 0 (exclusive) and 1 (inclusive): {self.size_ro_min}')
-
-        # Check: offset_max
-        if self.offset_max is not None:
-            try:
-                self.offset_max = int(self.offset_max)
-            except ValueError:
-                raise ValueError(f'Offset-max parameter (offset_max) is not an integer: {self.offset_max}')
-            except OverflowError:
-                raise ValueError(f'Offset-max parameter (offset_max) exceeds the max size (32 bits): {self.offset_max}')
-
-            if self.offset_max < 0:
-                raise ValueError(f'Offset-max parameter (offset_max) must not be negative: {self.offset_max}')
-
-        # Check: offset_prop_max
-        if self.offset_prop_max is not None:
-            try:
-                self.offset_prop_max = float(self.offset_prop_max)
-            except ValueError:
-                raise ValueError(f'Size-offset-max parameter (offset_prop_max) is not a floating point number: {self.offset_prop_max}')
-
-            if self.offset_prop_max < float(0.0):
-                raise v(f'Size-offset-max parameter (offset_prop_max) must not be negative: {self.offset_prop_max}')
-
-        # Check: match_ref
-        if self.match_ref is None:
-            self.match_ref = False
-        else:
-            if not isinstance(self.match_ref, bool):
-                raise ValueError(f'Match reference allele (match_ref) must be a boolean: {type(self.match_ref)}')
-
-        # Check: match_alt
-        if self.match_alt is None:
-            self.match_alt = False
-        else:
-            if not isinstance(self.match_alt, bool):
-                raise ValueError(f'Match alternate allele (match_alt) must be a boolean: {type(self.match_alt)}')
-
-        # Check: match_prop_min & match_score_model
-        self.match_seq = self.match_prop_min is not None
-
-        if self.match_seq:
-            if self.match_score_model is None:
-                self.match_score_model = seqmatch.MatchScoreModel()
-            else:
-                if not isinstance(self.match_score_model, seqmatch.MatchScoreModel):
-                    raise ValueError(f'Alignment model (match_score_model) must be a seqmatch.MatchScoreModel: {type(self.match_score_model)}')
-
-            try:
-                self.match_prop_min = float(self.match_prop_min)
-            except ValueError:
-                raise ValueError(f'Alignment proportion (match_prop_min) must be a number: {self.match_prop_min} (type {type(self.match_prop_min)})')
-
-            if self.match_prop_min <= 0.0 or self.match_prop_min > 1.0:
-                raise ValueError(f'Alignment proportion (match_prop_min) must be between 0.0 (exclusive) and 1.0 (inclusive): {self.match_prop_min}')
-
-        # Check: chunk_range
-        if self.chunk_range is None:
-            self.chunk_range = dict()
-        else:
-            if not isinstance(self.chunk_range, dict):
-                raise ValueError(f'Chunk range (chunk_range) must be a dict: {type(self.chunk_range)}')
-
-        # Check: join_predicates
-        if self.join_predicates is None:
-            self.join_predicates = []
-        elif not isinstance(self.join_predicates, list):
-            raise ValueError(f'Join predicates (join_predicates) must be a list: {type(self.join_predicates)}')
-
-        # Check: join_filters
-        if self.join_filters is None:
-            self.join_filters = []
-        elif not isinstance(self.join_filters, list):
-            raise ValueError(f'Join filters (join_filters) must be a list: {type(self.join_filters)}')
-
-        # Check: chunk_size
-        if self.chunk_size is not None:
-            try:
-                self.chunk_size = int(self.chunk_size)
-            except ValueError:
-                raise ValueError(f'Chunk size (chunk_size) is not an integer: {self.chunk_size}')
-            except OverflowError:
-                raise ValueError(f'Chunk size (chunk_size) exceeds the max size (32 bits): {self.chunk_size}')
-
-            if self.chunk_size < 0:
-                raise ValueError(f'Chunk size (chunk_size) must not be negative: {self.chunk_size}')
-
-    def _set_join_exprs(self) -> None:
-        """
-        Set expressions for joining. This should only be called once by the constructor.
-        """
-
-        self.expr_overlap_ro = (
-            (
-                (
-                    pl.min_horizontal([pl.col('end_ro_a'), pl.col('end_ro_b')]) - pl.max_horizontal([pl.col('pos_a'), pl.col('pos_b')])
-                ) / (
-                    pl.max_horizontal([pl.col('svlen_a'), pl.col('svlen_b')])
-                )
-            )
-            .clip(0.0, 1.0)
-            .cast(pl.Float32)
-        )
-
-        self.expr_szro = (
-            (
-                (
-                    pl.min_horizontal([pl.col('svlen_a'), pl.col('svlen_b')])
-                ) / (
-                    pl.max_horizontal([pl.col('svlen_a'), pl.col('svlen_b')])
-                )
-            )
-            .cast(pl.Float32)
-        )
-
-        self.expr_offset_dist = (
-            pl.max_horizontal(
-                (pl.col('pos_a') - pl.col('pos_b')).abs(),
-                (pl.col('end_a') - pl.col('end_b')).abs()
-            )
-            .cast(pl.Int32)
-        )
-
-        self.expr_offset_prop = (
-            (
-                self.expr_offset_dist / pl.min_horizontal([pl.col('svlen_a'), pl.col('svlen_b')])
-            )
-            .cast(pl.Float32)
-        )
-
-        self.expr_match_prop = (
-            pl.struct(
-                pl.col('seq_a'), pl.col('seq_b')
-            )
-            .map_elements(
-                lambda s: self.match_score_model.match_prop(s['seq_a'], s['seq_b']),
-                return_dtype=pl.Float32
-            )
-        ) if self.match_seq else (
-            pl.lit(None).cast(pl.Float32)
-        )
-
-    def _set_predicates(self) -> None:
-        """
-        Set predicates and expressions for joining. This should only be called once by the constructor.
-        """
-
-        chunk_range = collections.defaultdict(list)
-        join_predicates = []
-        join_filters = []
-
-        # ro_min
-        if self.ro_min is not None:
-            chunk_range['pos_max'].append(pl.col('end_ro_a'))
-            chunk_range['end_ro_min'].append(pl.col('pos_a'))
-
-            join_predicates.extend([
-                self.expr_overlap_ro >= self.ro_min
-            ])
-
-            # join_filters.append(
-            #     pl.col('ro') >= ro_min
-            # )
-
-        # size_ro_min
-        if self.size_ro_min is not None:
-            chunk_range['svlen_min'].append(pl.col('svlen_a') * self.size_ro_min)
-            chunk_range['svlen_max'].append(pl.col('svlen_a') * (1 / self.size_ro_min))
-
-            join_predicates.append(
-                self.expr_szro >= self.size_ro_min
-            )
-
-        # offset_max
-        if self.offset_max is not None:
-            if self.offset_max == 0:
-                join_predicates.extend([  # Very fast joins on equality
-                    pl.col('pos_a') == pl.col('pos_b'),
-                    pl.col('end_a') == pl.col('end_b')
-                ])
-            else:
-                join_predicates.append(
-                    self.expr_offset_dist <= self.offset_max
-                )
-
-            chunk_range['pos_min'].append(pl.col('pos_a') - self.offset_max)
-            chunk_range['end_max'].append(pl.col('end_a') + self.offset_max)
-
-        # offset_prop_max
-        if self.offset_prop_max is not None:
-            chunk_range['pos_min'].append(pl.col('pos_a') - pl.col('svlen_a') * self.offset_prop_max)
-            chunk_range['end_max'].append(pl.col('end_a') + pl.col('svlen_a') * self.offset_prop_max)
-
-            join_predicates.append(
-                self.expr_offset_prop <= self.offset_prop_max
-            )
-
-        # match_prop_min
-        if self.match_prop_min is not None and self.match_prop_min > 0.0:
-            join_filters.append(
-                pl.col('match_prop') >= self.match_prop_min
-            )
-
-        # match_ref
-        if self.match_ref:
-            join_predicates.append(
-                pl.col('ref_a') == pl.col('ref_b')
-            )
-
-        # match_alt
-        if self.match_alt:
-            join_predicates.append(
-                pl.col('alt_a') == pl.col('alt_b')
-            )
-
-        # Merge chunk ranges with user-defined ranges (user-defined last)
-        for key in set(self.chunk_range.keys()).union(set(chunk_range.keys())):
-            self.chunk_range[key] = (
-                chunk_range[key]
-            ) + (
-                self.chunk_range[key] if key in self.chunk_range else []
-            )
-
-        # Concatenate join predicates and join filters
-        self.join_predicates = join_predicates + self.join_filters
-        self.join_filters = join_filters + self.join_filters
-
-        if len(self.join_predicates) == 0:
-            self.join_predicates = [pl.lit(True)]
-
-        if len(self.join_filters) == 0:
-            self.join_filters = [pl.lit(True)]
-
-
-    def _set_expected_cols(self) -> None:
-
-        self.expected_cols = ['chrom', 'pos', 'end']
-
-        if self.match_ref:
-            self.expected_cols.append('ref')
-        if self.match_alt:
-            self.expected_cols.append('alt')
-        if self.match_seq:
-            self.expected_cols.append('seq')
-
-
     def prepare_tables(self, df_a: pl.LazyFrame, df_b: pl.LazyFrame) -> tuple[pl.LazyFrame, pl.LazyFrame]:
         """
         Prepares tables for join. Checks for expected columns and formats, adds missing columns as needed, and
@@ -648,6 +565,9 @@ class PairwiseIntersect(object):
 
         :return: Tuple of normalized tables (df_a, df_b).
         """
+
+        # Columns this function automatically generates
+        autogen_cols = {'svlen'}
 
         # Check input types
         if isinstance(df_a, pl.DataFrame):
@@ -660,17 +580,12 @@ class PairwiseIntersect(object):
         elif not isinstance(df_b, pl.LazyFrame):
             raise TypeError(f'Variant target: Expected DataFrame or LazyFrame, got {type(df_b)}')
 
-        # Apply column map
-        if self.col_map is not None:
-            df_a = df_a.rename(lambda col: self.col_map.get(col, col))
-            df_b = df_b.rename(lambda col: self.col_map.get(col, col))
-
         # Check for expected columns
-        columns_a = [col for col in df_a.collect_schema().names() if col in KNOWN_COL_SET]
-        columns_b = [col for col in df_b.collect_schema().names() if col in KNOWN_COL_SET]
+        columns_a = set(df_a.collect_schema().names())
+        columns_b = set(df_b.collect_schema().names())
 
-        missing_cols_a = [col for col in self.expected_cols if col not in columns_a]
-        missing_cols_b = [col for col in self.expected_cols if col not in columns_b]
+        missing_cols_a = sorted((self.expected_cols - columns_a) - autogen_cols)
+        missing_cols_b = sorted((self.expected_cols - columns_b) - autogen_cols)
 
         if missing_cols_a or missing_cols_b:
             if missing_cols_a == missing_cols_b:
@@ -687,8 +602,6 @@ class PairwiseIntersect(object):
                 )
             )
 
-            columns_a.append('svlen')
-
         if 'svlen' not in columns_b:
             df_b = (
                 df_b
@@ -696,8 +609,6 @@ class PairwiseIntersect(object):
                     pl.lit(None).cast(schema.VARIANT['svlen']).alias('svlen')
                 )
             )
-
-            columns_b.append('svlen')
 
         df_a = (
             df_a
@@ -717,11 +628,15 @@ class PairwiseIntersect(object):
             )
         )
 
-        # Subset to known columns only (i.e. drop other columns that might confilct, such as an arbitrary "index" column).
-        df_a = df_a.select(columns_a)
-        df_b = df_b.select(columns_b)
-
         # Set index
+        if reserved_cols := sorted(RESERVED_COLUMNS & columns_a):
+            warn(f'Dropping reserved columns from table "A": {", ".join(reserved_cols)}')
+            df_a = df_a.drop(reserved_cols)
+
+        if reserved_cols :=sorted(RESERVED_COLUMNS & columns_b):
+            warn(f'Dropping reserved columns from table "B": {", ".join(reserved_cols)}')
+            df_b = df_b.drop(reserved_cols)
+
         df_a = (
             df_a
             .with_row_index('index')
@@ -817,6 +732,71 @@ class PairwiseIntersect(object):
 
         return df_a, df_b
 
+    def _chunk_relative(
+            self,
+            df_a: pl.LazyFrame,
+            df_b: pl.LazyFrame,
+            chrom: str
+    ) -> pl.LazyFrame:
+        """
+        Chunk df_b relative to df_a choosing records in df_b that could possibly be joined with some record in df_a.
+        For example, this function may determine the minimum and maximum values of pos and end, and then subset df_b
+        by those values. The actual subset values are determined by the `chunk_range` attribute.
+
+        `chunk_range` is a dictionary with keys formatted as ('column', 'limit') where "column" is a column name and
+        "limit" is "min" or "max". Each value is a list of expressions to be applied to df_a, which will then determine
+        the minimum or maximum value to be applied.
+
+        For example, if ('pos', 'min') is a key in chunk_range, then chunk_range['pos', 'min'] is a list of expressions.
+        In this example, assume it is a list with the single expression "pl.col('pos_a') - pl.col('svlen_a')"). For
+        each record in df_a, the expression will compute the position minus the variant length producing a single value
+        for each record. Since this is a minimum value, the minimum of these values (one per record in df_a) will
+        be used to filter records in df_b by excluding any records with "pos_b" less than this minimum.
+
+        The flexibility of this function is needed to support different limits. For example, when reciprocal overlap is
+        used as a limit, the maximum value of pos_b is based on the maximum value of end_a (i.e. "chunk_range['pos', 'max']"
+        will contain "pl.col('end_a')" because if pos_b greater than any "end_a", then variants cannot overlap.
+
+        :param df_a: Table chunk.
+        :param df_b: Table to be chunked to records that may intersect with df_a.
+        :param chrom: Chromosome name.
+
+        :return: df_b partitioned (LazyFrame).
+        """
+
+        filter_list = [
+            pl.col('chrom_b') == chrom
+        ]
+
+        for (col_name, limit), expr_list in self.chunk_range.items():
+
+            if limit == 'min':
+                filter_list.append(
+                    pl.col(col_name + '_b') >= (
+                        df_a
+                        .select(pl.min_horizontal(*expr_list))
+                        .collect()
+                        .to_series()
+                        .min()
+                    )
+                )
+
+            elif limit == 'max':
+                filter_list.append(
+                    pl.col(col_name + '_b') <= (
+                        df_a
+                        .select(pl.max_horizontal(*expr_list))
+                        .collect()
+                        .to_series()
+                        .max()
+                    )
+                )
+
+            else:
+                raise ValueError(f'Unknown limit: "{limit}"')
+
+        return df_b.filter(*filter_list)
+
 
 def chunk_index(
         df_a: pl.LazyFrame,
@@ -843,74 +823,6 @@ def chunk_index(
         .filter(pl.col('index_a') < i_a_max)
     )
 
-
-def chunk_relative(
-        df_a: pl.LazyFrame,
-        df_b: pl.LazyFrame,
-        chrom: str,
-        chunk_range: dict[str,list[pl.Expr]],
-) -> pl.LazyFrame:
-    """
-    Chunk df_b relative to df_a choosing records in df_b that could possibly be joined with some record in df_a.
-    For example, this function may determine the minimum and maximum values of pos and end, and then subset df_b
-    by those values. The actual subset values are determined by the `chunk_range` parameter.
-
-    `chunk_range` is a dictionary with keys formatted as "column_limit" where "column" is a column name and "limit" is
-    "min" or "max". Each value is a list of expressions to be applied to df_a, which will then determine the minimum
-    or maximum value to be applied.
-
-    For example, if "pos_min" is a key in chunk_range, then chunk_range['pos_min'] is a list of expressions. In this
-    example, assume it is a list with the single expression "pl.col('pos_a') - pl.col('svlen_a')"). For each record in
-    df_a, the expression will compute the position minus the variant length producing a single value for each record.
-    Since this is a minimum value (i.e. key was "pos_min"), the minimum of these values (one per record in df_a) will
-    be used to filter records in df_b by excluding any records with "pos_b" less than this minimum.
-
-    The flexibility of this function is needed to support different limits. For example, when reciprocal overlap is
-    used as a limit, the maximum value of pos_b is based on the maximum value of end_a (i.e. "chunk_range['pos_max']"
-    will contain "pl.col('end_a')" because if pos_b greater than any "end_a", then variants cannot overlap.
-
-    :param df_a: Table chunk.
-    :param df_b: Table to be chunked to records that may intersect with df_a.
-    :param chrom: Chromosome name.
-    :param chunk_range: A dictionary of expressions to be applied to df_a to determine the minimum or maximum value for
-        fields in df_b.
-
-    :return: df_b partitioned (LazyFrame).
-    """
-
-    filter_list = [
-        pl.col('chrom_b') == chrom
-    ]
-
-    for key, expr_list in chunk_range.items():
-        col_name, limit = key.rsplit('_', 1)
-
-        if limit == 'min':
-            filter_list.append(
-                pl.col(col_name + '_b') >= (
-                    df_a
-                    .select(pl.min_horizontal(*expr_list))
-                    .collect()
-                    .to_series()
-                    .min()
-                )
-            )
-
-        elif limit == 'max':
-            filter_list.append(
-                pl.col(col_name + '_b') <= (
-                    df_a
-                    .select(pl.max_horizontal(*expr_list))
-                    .collect()
-                    .to_series()
-                    .max()
-                )
-            )
-
-        else:
-            raise ValueError(f'Unknown limit: "{limit}"')
-
-    return df_b.filter(*filter_list)
 
 
 def join_weight(
@@ -978,6 +890,7 @@ def join_weight(
 
     return df_join
 
+
 def join_iter(
     df_a: pl.DataFrame|pl.LazyFrame,
     df_b: pl.DataFrame|pl.LazyFrame,
@@ -985,13 +898,9 @@ def join_iter(
     size_ro_min: float=None,
     offset_max: int=None,
     offset_prop_max: float=None,
-    match_prop_min: float=None,
     match_ref: bool=False,
     match_alt: bool=False,
-    col_map: dict[str,str]=None,
-    match_score_model: seqmatch.MatchScoreModel=None,
-    force_end_ro: bool=False,
-    chunk_size: int=10_000
+    match_prop_min: float=None
 ) -> Generator[pl.LazyFrame, None, None]:
     """
     A convenience wrapper for creating a PairwiseIntersect object and calling its join_iter() method.
@@ -1004,21 +913,9 @@ def join_iter(
         this value represents the lower-bound of allowed match proportions.
     :param offset_max: Maximum offset allowed (minimum of start or end position distance).
     :param offset_prop_max: Maximum size-offset (offset / svlen) allowed.
-    :param match_prop_min: Minimum matched base proportion in alignment or None to not match.
     :param match_ref: "REF" column must match between two variants.
     :param match_alt: "ALT" column must match between two variants.
-    :param col_map: Map column names from input dataframes by this dictionary. May be string "bed" to use default
-        BED column names.
-    :param match_score_model: Configured model for scoring similarity between pairs of sequences. If `None` and
-        `match_prop_min` is set, then a default aligner will be used.
-    :param force_end_ro: By default, reciprocal overlap is calculated with the end position set to the start
-        position plus the variant length. For all variants except insertions, this will typically match the end value
-        in the source DataFrame. If `True`, the end position in the DataFrame is also used for reciprocal overlap
-        without changes. Typically, this option should not be used and will break reciprocal overlap for insertions.
-    :param chunk_size: Chunk df_a into partitions of this size, and for each chunk, subset df_b to include only
-        variants that may intersect with variants in the chunk. If None, each chromosome is a single chunk, which will
-        lead to a combinatorial explosion unless offset_max is 0 (the join operation is optimized without chunking in
-        this case). All intersects are first chunked by chromosome, then by this chunk size.
+    :param match_prop_min: Minimum matched base proportion in alignment or None to not match.
 
     :return: An iterator of join results.
     """
@@ -1028,13 +925,9 @@ def join_iter(
         size_ro_min=size_ro_min,
         offset_max=offset_max,
         offset_prop_max=offset_prop_max,
-        match_prop_min=match_prop_min,
         match_ref=match_ref,
         match_alt=match_alt,
-        col_map=col_map,
-        match_score_model=match_score_model,
-        force_end_ro=force_end_ro,
-        chunk_size=chunk_size
+        match_prop_min=match_prop_min
     ).join_iter(df_a, df_b)
 
 
@@ -1045,13 +938,9 @@ def join(
     size_ro_min: float=None,
     offset_max: int=None,
     offset_prop_max: float=None,
-    match_prop_min: float=None,
     match_ref: bool=False,
     match_alt: bool=False,
-    col_map: dict[str,str]=None,
-    match_score_model: seqmatch.MatchScoreModel=None,
-    force_end_ro: bool=False,
-    chunk_size: int=10_000
+    match_prop_min: float=None,
 ) -> pl.LazyFrame:
     """
     A convenience wrapper for creating a PairwiseIntersect object and calling its join() method.
@@ -1064,21 +953,9 @@ def join(
         this value represents the lower-bound of allowed match proportions.
     :param offset_max: Maximum offset allowed (minimum of start or end position distance).
     :param offset_prop_max: Maximum size-offset (offset / svlen) allowed.
-    :param match_prop_min: Minimum matched base proportion in alignment or None to not match.
     :param match_ref: "REF" column must match between two variants.
     :param match_alt: "ALT" column must match between two variants.
-    :param col_map: Map column names from input dataframes by this dictionary. May be string "bed" to use default
-        BED column names.
-    :param match_score_model: Configured model for scoring similarity between pairs of sequences. If `None` and
-        `match_prop_min` is set, then a default aligner will be used.
-    :param force_end_ro: By default, reciprocal overlap is calculated with the end position set to the start
-        position plus the variant length. For all variants except insertions, this will typically match the end value
-        in the source DataFrame. If `True`, the end position in the DataFrame is also used for reciprocal overlap
-        without changes. Typically, this option should not be used and will break reciprocal overlap for insertions.
-    :param chunk_size: Chunk df_a into partitions of this size, and for each chunk, subset df_b to include only
-        variants that may intersect with variants in the chunk. If None, each chromosome is a single chunk, which will
-        lead to a combinatorial explosion unless offset_max is 0 (the join operation is optimized without chunking in
-        this case). All intersects are first chunked by chromosome, then by this chunk size.
+    :param match_prop_min: Minimum matched base proportion in alignment or None to not match.
 
     :return: A join table.
     """
@@ -1088,11 +965,7 @@ def join(
         size_ro_min=size_ro_min,
         offset_max=offset_max,
         offset_prop_max=offset_prop_max,
-        match_prop_min=match_prop_min,
         match_ref=match_ref,
         match_alt=match_alt,
-        col_map=col_map,
-        match_score_model=match_score_model,
-        force_end_ro=force_end_ro,
-        chunk_size=chunk_size
+        match_prop_min=match_prop_min,
     ).join(df_a, df_b)

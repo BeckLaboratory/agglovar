@@ -230,14 +230,17 @@ def df_join(
     """
 
     return agglovar.join.pairwise.join(
-        df_a, df_b,
-        ro_min=ro_min,
-        offset_max=offset_max,
-        size_ro_min=size_ro_min,
-        offset_prop_max=offset_prop_max,
-        match_prop_min=match_prop_min,
-        match_ref=match_ref,
-        match_alt=match_alt
+        **{
+            key: val for key, val in locals().items() if val is not None and key not in {'svtype'}
+        }
+
+        # ro_min=ro_min,
+        # offset_max=offset_max,
+        # size_ro_min=size_ro_min,
+        # offset_prop_max=offset_prop_max,
+        # match_prop_min=match_prop_min,
+        # match_ref=match_ref,
+        # match_alt=match_alt
     ).collect()
 
 
