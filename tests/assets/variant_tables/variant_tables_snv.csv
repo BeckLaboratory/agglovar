@@ -1,0 +1,12 @@
+﻿table_name,chrom,pos,end,id,svtype,ref,alt,comment
+a,chr1,100,101,chr1-101-CG,SNV,c,g,
+a,chr1,120,121,chr1-121-CG,SNV,C,g,
+a,chr1,200,201,chr1-201-GC,SNV,g,c,
+a,chr2,100,101,chr2-101-TC,SNV,T,C,
+a,chr2,200,201,chr2-201-AG,SNV,A,G,
+a,chr2,205,206,chr2-206-AT,SNV,a,T,
+b,chr1,120,121,chr1-121-CG,SNV,C,G,
+b,chr1,300,301,chr1-301-CG,SNV,C,G,
+b,chr2,120,121,chr2-121-CT,SNV,C,T,
+b,chr2,200,201,chr2-201-AG,SNV,A,G,
+b,chr2,205,206,chr2-206-CT,SNV,C,T,

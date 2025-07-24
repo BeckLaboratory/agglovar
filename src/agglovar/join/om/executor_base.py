@@ -1,5 +1,5 @@
 """
-Base class for intersect executors.
+Base class for join executors.
 """
 
 import abc
@@ -8,7 +8,7 @@ import polars as pl
 
 class JoinExecutor(metaclass=abc.ABCMeta):
     """
-    Interface for intersect runners.
+    Interface for join executors.
     """
 
     def join(
@@ -17,11 +17,7 @@ class JoinExecutor(metaclass=abc.ABCMeta):
             source_names: list[str]=None
     ) -> pl.DataFrame:
         """
-        Run intersect for a list of callsets.
-
-        During the intersect process, intermediate intersect results must be collected, so the whole process cannot
-        run in streaming/lazy mode. However, the final step uses the resolved merge to extract and formats the merged
-        callset, which is streamable and can require significant memory for large callsets with many fields.
+        Run join for a list of callsets.
 
         :param df_list: List of callsets. Must be a list or tuple of Polars DataFrames or LazyFrames.
         :param source_names: Names of each callset in `df_list`. If any names are missing, they will be set by the

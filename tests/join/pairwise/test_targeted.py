@@ -1,6 +1,5 @@
 """
-Targeted tests for agglovar.seqmatch. These tests use no automation and are designed to test the basic functionality
-of sequence matching.
+Targeted tests for agglovar.join.pairwise
 """
 
 from tests.join.resources import *
@@ -29,11 +28,7 @@ class TestJoin:
         assert list(df_join.columns) == list(df_exp.columns)
 
         # Types match
-        assert [
-            (col, df_join.schema[col]) for col in df_join.columns
-        ] == [
-            (col, df_exp.schema[col]) for col in df_exp.columns
-        ], 'Schema does not match'
+        assert dict(df_join.schema) == dict(df_exp.schema), 'Schema does not match'
 
     def test_join_records(self,
         df_join: pl.DataFrame,
@@ -51,30 +46,27 @@ class TestJoin:
 
         if df_miss.height:
             assert False, \
-                f'Missing {df_miss.height} join records: ' + \
+                f'Missing {df_miss.height} join records ({df_extra.height} extraneous): ' + \
                 '; '.join([
-                    f'A=({row[0]}, "{row[2]}") <-> B=({row[1]}, "{row[3]}")'
+                    f'"{str(row)}"'
                         for row in [
-                            df_miss.row(row_index)
-                                for row_index in range(min(df_miss.height, 3))
+                            df_miss.row(row_index, named=True)
+                                for row_index in range(min(df_miss.height, 2))
                         ]
                 ]) + \
-                ('...' if df_miss.height > 3 else '') + \
-                (
-                    f' + {df_extra.height} extraneous join records (not shown)' if df_extra.height else ''
-                )
+                ('...' if df_miss.height > 2 else '')
 
         if df_extra.height:
             assert False, \
                 f'Found {df_extra.height} extraneous join records: ' + \
                 '; '.join([
-                    f'A=({row[0]}, "{row[2]}") <-> B=({row[1]}, "{row[3]}")'
+                    f'"{str(row)}"'
                         for row in [
-                            df_extra.row(row_index)
-                                for row_index in range(min(df_extra.height, 3))
+                            df_extra.row(row_index, named=True)
+                                for row_index in range(min(df_extra.height, 2))
                         ]
                 ]) + \
-                ('...' if df_extra.height > 3 else '')
+                ('...' if df_extra.height > 2 else '')
 
     def test_join_meta(self,
         df_join: pl.DataFrame,

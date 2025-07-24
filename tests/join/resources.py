@@ -14,17 +14,34 @@ from tests.assets.variant_tables.load import load_variant_table
 
 PARAMS_CROSS = [
     {
-        'svtype': 'ins',
+        'svtype': ['ins', 'del'],
         'ro_min': [0.0, 0.2, 0.5, 0.9, 1.0],
         'offset_max': None,
-        'match_prop_min': [None, 0.5, 0.8, 1.0]
+        'size_ro_min': None,
+        'offset_prop_max': None,
+        'match_prop_min': [None, 0.5, 0.8, 1.0],
+        'match_ref': None,
+        'match_alt': None
     },
     {
-        'svtype': 'ins',
+        'svtype': ['ins', 'del'],
         'ro_min': None,
         'offset_max': [None, 200, 1000],
-        #'size_ro_min': [None, 0.8],
-        'match_prop_min': [None, 0.5, 0.8, 1.0]
+        'size_ro_min': [None, 0.8],
+        'offset_prop_max': [None, 2.0],
+        'match_prop_min': [None, 0.5, 0.8, 1.0],
+        'match_ref': None,
+        'match_alt': None
+    },
+    {
+        'svtype': 'snv',
+        'ro_min': None,
+        'offset_max': [None, 5, 200, 1000],
+        'size_ro_min': None,
+        'offset_prop_max': None,
+        'match_prop_min': None,
+        'match_ref': [None, True, False],
+        'match_alt': [None, True, False]
     }
 ]
 
@@ -32,9 +49,11 @@ PARAM_KEYS = [
     'svtype',
     'ro_min',
     'offset_max',
-    # 'size_ro_min',
-    # 'offset_prop_max',
-    'match_prop_min'
+    'size_ro_min',
+    'offset_prop_max',
+    'match_prop_min',
+    'match_ref',
+    'match_alt'
 ]
 
 PARAM_KEY_SPEC = ','.join(PARAM_KEYS)
@@ -119,7 +138,11 @@ def df_exp(
         df_b: pl.DataFrame,
         ro_min: float|None,
         offset_max: int|None,
-        match_prop_min: float
+        size_ro_min: float|None,
+        offset_prop_max: float|None,
+        match_prop_min: float,
+        match_ref: bool|None,
+        match_alt: bool|None
 ):
     """
     Get a table of expected join records.
@@ -127,12 +150,17 @@ def df_exp(
     :param df_exp_all: A table of all possible join records.
     :param svtype: SV type.
     :param ro_min: Reciprocal overlap threshold.
+    :param offset_max: Maximum offset.
+    :param size_ro_min: Minimum size reciprocal overlap.
+    :param offset_prop_max: Maximum offset proportion.
     :param match_prop_min: Minimum match proportion.
+    :param match_ref: Match reference base.
+    :param match_alt: Match alternate base.
 
     :return: Expected join records.
     """
 
-    df_exp_all = make_expected_join_table(df_a, df_b)
+    df_exp_all = make_expected_join_table(df_a, df_b, match_ref, match_alt)
 
     filters = list()
     with_exprs = list()
@@ -145,6 +173,16 @@ def df_exp(
     if offset_max is not None:
         filters.append(
             pl.col('offset_dist') <= offset_max
+        )
+
+    if size_ro_min is not None:
+        filters.append(
+            pl.col('size_ro') >= size_ro_min
+        )
+
+    if offset_prop_max is not None:
+        filters.append(
+            pl.col('offset_prop') <= offset_prop_max
         )
 
     if match_prop_min is not None:
@@ -166,9 +204,13 @@ def df_exp(
 def df_join(
         df_a: pl.DataFrame,
         df_b: pl.DataFrame,
-        ro_min: float,
-        offset_max: int,
-        match_prop_min: float
+        ro_min: float|None,
+        offset_max: int|None,
+        size_ro_min: float|None,
+        offset_prop_max: float|None,
+        match_prop_min: float|None,
+        match_ref: bool|None,
+        match_alt: bool|None
 ) -> pl.DataFrame:
     """
     Get a table of joined records.
@@ -177,17 +219,27 @@ def df_join(
     :param df_b: DataFrame B.
     :param svtype: SV type.
     :param ro_min: Reciprocal overlap threshold.
+    :param offset_max: Maximum offset.
+    :param size_ro_min: Minimum size reciprocal overlap.
+    :param offset_prop_max: Maximum offset proportion.
     :param match_prop_min: Minimum match proportion.
+    :param match_ref: Match reference base.
+    :param match_alt: Match alternate base.
 
     :return: Actual join records.
     """
 
-    return agglovar.join.pairwise.intersect(
+    return agglovar.join.pairwise.join(
         df_a, df_b,
         ro_min=ro_min,
         offset_max=offset_max,
-        match_prop_min=match_prop_min
+        size_ro_min=size_ro_min,
+        offset_prop_max=offset_prop_max,
+        match_prop_min=match_prop_min,
+        match_ref=match_ref,
+        match_alt=match_alt
     ).collect()
+
 
 #
 # Helper functions
@@ -274,11 +326,15 @@ def row_to_dict(
 
 def make_expected_join_table(
         df_a: pl.DataFrame,
-        df_b: pl.DataFrame
+        df_b: pl.DataFrame,
+        match_ref: bool|None,
+        match_alt: bool|None
 ) -> pl.DataFrame:
     """
     :param df_a: DataFrame A.
     :param df_b: DataFrame B.
+    :param match_ref: Match reference base.
+    :param match_alt: Match alternate base.
 
     :return: Expected join table.
     """
@@ -286,6 +342,24 @@ def make_expected_join_table(
     match_score_model = agglovar.seqmatch.MatchScoreModel()
 
     row_list = list()
+
+    if 'svlen' not in df_a.columns:
+        df_a = (
+            df_a
+            .with_columns(
+                (pl.col('end') - pl.col('pos')).alias('svlen').cast(agglovar.schema.VARIANT['svlen'])
+            )
+        )
+
+    if 'svlen' not in df_b.columns:
+        df_b = (
+            df_b
+            .with_columns(
+                (pl.col('end') - pl.col('pos')).alias('svlen').cast(agglovar.schema.VARIANT['svlen'])
+            )
+        )
+
+    has_seq = 'seq' in df_a.columns and 'seq' in df_b.columns
 
     for i_a in range(df_a.height):
         for i_b in range(df_b.height):
@@ -296,6 +370,12 @@ def make_expected_join_table(
             if row_a['chrom'] != row_b['chrom']:
                 continue
 
+            if match_ref and not row_a['ref'].upper() == row_b['ref'].upper():
+                continue
+
+            if match_alt and not row_a['alt'].upper() == row_b['alt'].upper():
+                continue
+
             row_list.append({
                 'index_a': i_a,
                 'index_b': i_b,
@@ -303,9 +383,9 @@ def make_expected_join_table(
                 'id_b': row_b['id'],
                 'ro': get_ro(row_a, row_b),
                 'offset_dist': (offset_dist := get_offset_dist(row_a, row_b)),
-                'offset_prop': offset_dist / np.max([row_a['svlen'], row_b['svlen']]),
+                'offset_prop': offset_dist / np.min([row_a['svlen'], row_b['svlen']]),
                 'size_ro': np.min([row_a['svlen'], row_b['svlen']]) / np.max([row_a['svlen'], row_b['svlen']]),
-                'match_prop': match_score_model.match_prop(row_a['seq'], row_b['seq'])
+                'match_prop': match_score_model.match_prop(row_a['seq'], row_b['seq']) if has_seq else None
             })
 
     return pl.DataFrame(
@@ -356,7 +436,7 @@ def get_offset_dist(
     :return: Offset distance.
     """
 
-    return np.min([
+    return np.max([
         np.abs(row_a['pos'] - row_b['pos']),
         np.abs(row_a['end'] - row_b['end'])
     ])
