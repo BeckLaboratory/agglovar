@@ -2,13 +2,17 @@
 Basic k-mer manipulation utilities.
 """
 
-import typing
+import math
+from typing import Self, Optional, Iterable, Iterator
+
+import numpy as np
 
 # Integer to base
-INT_TO_BASE = ['A', 'C', 'G', 'T']
+INT_TO_BASE: list[str] = ['A', 'C', 'G', 'T']
+"""Maps 2-bit integer to base string."""
 
 # Base to integer
-BASE_TO_INT = {
+BASE_TO_INT: dict[str, int] = {
     'A': 0x0,
     'C': 0x1,
     'G': 0x2,
@@ -18,33 +22,82 @@ BASE_TO_INT = {
     'g': 0x2,
     't': 0x3
 }
+"""Maps base string to 2-bit integer."""
+
+BYTE_SIZE_TO_NUMPY_UINT: dict[int, np.integer] = {
+    1: np.uint8,
+    2: np.uint16,
+    3: np.uint16,
+    4: np.uint32,
+    5: np.uint32,
+    6: np.uint32,
+    7: np.uint32,
+    8: np.uint64,
+}
+"""
+Maps k-mer byte size the smallest numpy integer type that can store it. Only defined for sizes up to the maximum
+numpy unsigned numpy size (i.e. 8: np.uint64).
+"""
+
+NP_MAX_BYTE_SIZE = max(BYTE_SIZE_TO_NUMPY_UINT.keys())
+"""Maximum k-mer byte size for numpy arrays."""
+
+NP_MAX_BIT_SIZE = NP_MAX_BYTE_SIZE * 8
+"""Maximum k-mer bit size for numpy arrays."""
+
+NP_MAX_KMER_SIZE = NP_MAX_BIT_SIZE // 2
+"""Maximum k-mer size for numpy arrays."""
 
 class KmerUtil:
     k_size: int
     k_bit_size: int
+    k_byte_size: int
     k_min_size: int
     k_min_mask: int
     k_mask: int
-    word_size: int
-    word_size_bytes: int
-    min_kmer_util: typing.Self
+    min_kmer_util: Optional[Self]
     minimizer_mask: int
-
+    sub_per_kmer: Optional[int]
+    np_int_type: Optional[np.integer]
     """
     Manages basic k-mer functions, such as converting formats, appending bases, and reverse-complementing.
     Contains a set of constants specific to the k-mer size and minimizer (if defined).
+    
+    Attributes:
+        k_size: K-mer size.
+        k_bit_size: Number of bits in a k-mer. Minimum size of unsigned integers storing k-mers.
+        k_min_size: Minimizer size or <code>0</code> if a minimizer is not used.
+        k_min_mask: Minimizer mask if set and <code>kMinSize</code> is not <code>0</code>.
+        k_mask: Mask for k-mer part of integer. Masks out unused bits if an integer has more bits than `k_bit_size`.
+        k_bytes: Bytes per k-mer.
+        min_kmer_util: K-mer util for minimizer. `None` if a minimizer is not defined.
+        minimizer_mask: Mask for extracting minimizers from k-mers (minimizer-mask). `0` if a minimizer is not defined.
+        sub_per_kmer: Number of sub-kmers per k-mer (sub_per_kmer). `None` if a minimizer is not defined.
+        np_int_type: Smallest numpy unsigned integer type that can store k-mers of k_size. `None` if k_size is is
+            larger than the maximum numpy unsigned integer size (i.e. 8: np.uint64).
     """
 
-    def __init__(self, k_size, k_min_size=0, k_min_mask=0):
+    def __init__(
+            self,
+            k_size: int,
+            k_min_size: int = 0,
+            k_min_mask: int = 0
+    ) -> None:
 
         if k_min_mask != 0:
-            raise RuntimeError('Non-zero minimizer mask is not yet supported')
+            raise NotImplementedError('Non-zero minimizer mask is not yet supported')
+
+        if k_size < 0:
+            raise ValueError(f'K-mer size must be positive: {k_size}')
 
         # Size of k-mers this utility works with.
         self.k_size = int(k_size)
 
         # Size of k-mers in bits
         self.k_bit_size = self.k_size * 2
+
+        # Bytes per k-mer
+        self.k_byte_size = math.ceil(self.k_bit_size / 8)
 
         # Minimizer size or <code>0</code> if a minimizer is not used.
         self.k_min_size = k_min_size
@@ -53,13 +106,7 @@ class KmerUtil:
         self.k_min_mask = k_min_mask
 
         # Mask for k-mer part of integer.
-        self.k_mask = ~(~0 << (self.k_size * 2))
-
-        # 32-bit word size of k-mers
-        self.word_size = ((self.k_size - 1) // 16) + 1
-
-        # Bytes per k-mer
-        self.word_size_bytes = (self.k_size - 1) // 4 + 1
+        self.k_mask = ~(~0 << self.k_bit_size)
 
         # Mask for extracting minimizers from k-mers (minimizer-mask)
         # Number of sub-kmers per k-mer (sub_per_kmer)
@@ -69,6 +116,10 @@ class KmerUtil:
         else:
             self.min_kmer_util = None
             self.minimizer_mask = 0
+            self.sub_per_kmer = None
+
+        # Numpy integer type
+        self.np_int_type = BYTE_SIZE_TO_NUMPY_UINT.get(self.k_byte_size, None)
 
     def append(self,
         kmer: int,
@@ -153,6 +204,29 @@ class KmerUtil:
 
         return rev_kmer >> 2
 
+    def rev_complement_array(
+            self,
+            kmer_arr: np.ndarray
+    ) -> np.ndarray:
+        """
+        Reverse-complement k-mers in an array.
+
+        Args:
+            kmer_arr: K-mer array.
+
+        Returns:
+            Reverse-complemented k-mers.
+        """
+
+        kmer_arr = kmer_arr.copy()
+        rev_kmer_arr = np.empty_like(kmer_arr)
+
+        for index in range(self.k_size):
+            rev_kmer_arr = rev_kmer_arr << 2 | (kmer_arr & 0x3) ^ 0x3
+            kmer_arr >>= 2
+
+        return rev_kmer_arr & self.k_mask
+
     def canonical_complement(self,
         kmer: int
     ) -> int:
@@ -211,10 +285,11 @@ class KmerUtil:
 def stream(
     seq: str,
     kutil: KmerUtil
-) -> typing.Iterator[int]:
+) -> Iterator[int]:
     """
     Get an iterator for k-mers in a sequence.
 
+    Args:
     :param seq: String sequence of bases.
     :param kutil: K-mer util describing parameters (e.g. k-mer size).
 
@@ -244,7 +319,7 @@ def stream(
 def stream_index(
     seq: str,
     kutil: KmerUtil,
-) -> typing.Iterator[typing.Tuple[int, int]]:
+) -> Iterator[tuple[int, int]]:
     """
     Get an iterator for k-mers in a sequence with their index.
 

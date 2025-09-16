@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Docs
+docs/build
+
 # Other
 **/__pycache__
 

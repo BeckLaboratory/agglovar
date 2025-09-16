@@ -229,7 +229,7 @@ def df_join(
     :return: Actual join records.
     """
 
-    return agglovar.join.pairwise.join(
+    return agglovar.join.pair.join(
         **{
             key: val for key, val in locals().items() if val is not None and key not in {'svtype'}
         }

@@ -1,16 +1,64 @@
 [project]
 name = "agglovar"
-version = "0.0.1a1"
 description = "Toolkit for fast genomic variant transformations and intersects"
+
+license = "MIT"
+license-files = ["LICENSE"]
+
+dynamic = ["version"]
+
 readme = "README.md"
+
 requires-python = ">=3.12"
+
+[agglovar.urls]
+Homepage = "https://github.com/BeckLaboratory/agglovar"
+#Documentation = "https://agglovar.readthedocs.io"
+Repository = "https://github.com/BeckLaboratory/agglovar"
+Issues = "https://github.com/BeckLaboratory/agglovar/issues"
+Changelog = "https://github.com/BeckLaboratory/agglovar/blob/master/CHANGELOG.md"
+
+keywords = [
+    "variant merging",
+    "variant intersect",
+    "bioinformatics",
+    "genomics"
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Private :: Do Not Upload",  # Temporary until published
+]
+
+authors = [
+    {name = "Peter Audano", email = "peter.audano@jax.org"},
+]
+
+maintainers = [
+    {name = "Peter Audano", email = "peter.audano@jax.org"}
+]
+
 dependencies = [
+    "biopython>=1.85",
     "edlib>=1.3.9.post1",
     "numpy>=2.3.0",
     "ply>=3.11",
     "polars>=1.30.0",
 ]
-license = { file = "LICENSE" }
+
+[dependency-groups]
+dev = [
+    "ipython>=9.4.0",
+    "pylint>=3.3.7",
+    "pytest>=8.4.1",
+    "pytest-cov>=6.2.1",
+    "sphinx>=8.2.3",
+]
 
 [project.optional-dependencies]
 plot = [
@@ -20,18 +68,25 @@ all = [
     "agglovar[plot]"
 ]
 
+
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
-[dependency-groups]
-dev = [
-    "ipython>=9.4.0",
-    "pytest>=8.4.1",
-    "pytest-cov>=6.2.1",
-]
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["agglovar"]
+exclude = ["*__pycache__"]
+
+[tool.setuptools.dynamic]
+version = {attr = "agglovar.__version__"}
+
 
 [tool.pytest.ini_options]
 testpaths = [
     "tests"
 ]
+
+
+[tool.pylint.'MESSAGES CONTROL']
+max-line-length = 120

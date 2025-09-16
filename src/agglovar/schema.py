@@ -10,8 +10,8 @@ VARIANT = {
     'pos': pl.Int64,
     'end': pl.Int64,
     'id': pl.String,
-    'svtype': pl.String,
-    'svlen': pl.Int64,
+    'vartype': pl.String,
+    'varlen': pl.Int64,
     'ref': pl.String,
     'alt': pl.String,
     'seq': pl.String
@@ -19,7 +19,7 @@ VARIANT = {
 
 # Standard fields and column order for variant types
 STANDARD_FIELDS = {
-    'sv': ['chrom', 'pos', 'end', 'id', 'svtype', 'svlen'],
-    'indel': ['chrom', 'pos', 'end', 'id', 'svtype', 'svlen'],
+    'sv': ['chrom', 'pos', 'end', 'id', 'vartype', 'varlen'],
+    'indel': ['chrom', 'pos', 'end', 'id', 'vartype', 'varlen'],
     'snv': ['chrom', 'pos', 'id', 'ref', 'alt'],
 }

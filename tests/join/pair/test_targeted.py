@@ -1,5 +1,5 @@
 """
-Targeted tests for agglovar.join.pairwise
+Targeted tests for agglovar.join.pair
 """
 
 from tests.join.resources import *

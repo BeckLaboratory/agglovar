@@ -8,7 +8,7 @@ import polars as pl
 
 from ... import seqmatch
 
-from .. import pairwise
+from .. import pair
 
 from .executor_base import JoinExecutor
 
@@ -74,7 +74,7 @@ class IntersectExecutorNr(JoinExecutor):
             df_a = df_list[index_a]
             df_b = df_list[index_b]
 
-            df_join = pairwise.intersect(
+            df_join = pair.intersect(
                 df_a,
                 df_b,
                 ro_min=self.ro_min,

@@ -230,6 +230,12 @@ class MatchScoreModel:
         if seq_a is None or seq_b is None:
             return 0.0
 
+        seq_a = seq_a.upper().strip()
+        seq_b = seq_b.upper().strip()
+
+        if len(seq_a) == 0 or len(seq_b) == 0:
+            return 0.0
+
         if len(seq_a) > len(seq_b):
             seq_a, seq_b = seq_b, seq_a
 
