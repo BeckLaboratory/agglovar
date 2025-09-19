@@ -1,29 +1,94 @@
+"""Constants and functions for working with alignment operations.
+
+Definitions in this subpackage are borrowed from
+`PAV 3+ <https://github.com/BeckLaboratory/pav>`__.
 """
-Constants and functions for working with alignment operations. Operations are encoded in CIGAR strings or represented
-as tuples of (op_code: int, op_len: int).
-"""
+
+__all__ = [
+    # Sets of valid characters/codes
+    'INT_STR_SET',
+    'CIGAR_OP_SET',
+
+    # CIGAR operation codes
+    'M',
+    'I',
+    'D',
+    'N',
+    'S',
+    'H',
+    'P',
+    'EQ',
+    'X',
+
+    # Operation code sets
+    'CLIP_SET',
+    'ALIGN_SET',
+    'EQX_SET',
+
+    # Mappings
+    'OP_CHAR',
+    'OP_CHAR_FUNC',
+    'OP_CODE',
+
+    # Arrays
+    'CONSUMES_QRY_ARR',
+    'CONSUMES_REF_ARR',
+    'ADV_REF_ARR',
+    'ADV_QRY_ARR',
+    'VAR_ARR',
+
+    # Functions
+    'cigar_to_arr',
+]
+
 
 import numpy as np
+from types import MappingProxyType
+from typing import Mapping
 
-# CIGAR operations
-INT_STR_SET = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'}
-CIGAR_OP_SET = {'M', 'I', 'D', 'N', 'S', 'H', 'P', '=', 'X'}
+INT_STR_SET: frozenset[str] = frozenset({'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', })
+"""Set of valid integer character strings representing operation codes."""
 
-M = 0
-I = 1
-D = 2
-N = 3
-S = 4
-H = 5
-P = 6
-EQ = 7
-X = 8
+CIGAR_OP_SET: frozenset[str] = frozenset({'M', 'I', 'D', 'N', 'S', 'H', 'P', '=', 'X', })
+"""Set of valid operation characters."""
 
-CLIP_SET = {S, H}
-ALIGN_SET = {M, EQ, X}
-EQX_SET = {EQ, X}
+M: int = 0
+"""Match or mismatch operation code."""
 
-OP_CHAR = {
+I: int = 1  # noqa: E741
+"""Insertion operation code."""
+
+D: int = 2
+"""Deletion operation code."""
+
+N: int = 3
+"""Skipped region operation code."""
+
+S: int = 4
+"""Soft clipping operation code."""
+
+H: int = 5
+"""Hard clipping operation code."""
+
+P: int = 6
+"""Padding operation code."""
+
+EQ: int = 7
+"""Sequence match operation code."""
+
+X: int = 8
+"""Sequence mismatch operation code."""
+
+CLIP_SET: frozenset[int] = frozenset({S, H, })
+"""Set of clipping operation codes (soft and hard clipping)."""
+
+ALIGN_SET: frozenset[int] = frozenset({M, EQ, X, })
+"""Set of alignment operation codes (match, sequence match, mismatch)."""
+
+EQX_SET: frozenset[int] = frozenset({EQ, X, })
+"""Set of exact match/mismatch operation codes."""
+
+OP_CHAR: Mapping[int, str] = MappingProxyType({
     M: 'M',
     I: 'I',
     D: 'D',
@@ -33,11 +98,13 @@ OP_CHAR = {
     P: 'P',
     EQ: '=',
     X: 'X'
-}
+})
+"""Mapping from operation codes to their character representations."""
 
 OP_CHAR_FUNC = np.vectorize(lambda val: OP_CHAR.get(val, '?'))
+"""Vectorized function to convert operation codes to characters."""
 
-OP_CODE = {
+OP_CODE: Mapping[str, int] = MappingProxyType({
     'M': M,
     'I': I,
     'D': D,
@@ -47,28 +114,38 @@ OP_CODE = {
     'P': P,
     '=': EQ,
     'X': X
-}
+})
+"""Mapping from CIGAR characters to operation codes."""
 
-CONSUMES_QRY_ARR = np.array([M, I, S, EQ, X])
-CONSUMES_REF_ARR = np.array([M, D, N, EQ, X])
+CONSUMES_QRY_ARR: np.typing.NDArray[np.integer] = np.array([M, I, S, EQ, X])
+"""Array of operation codes that consume query bases."""
 
-ADV_REF_ARR = np.array([EQ, X, D])
-ADV_QRY_ARR = np.array([EQ, X, I, S, H])
-VAR_ARR = np.array([X, I, D])
+CONSUMES_REF_ARR: np.typing.NDArray[np.integer] = np.array([M, D, N, EQ, X])
+"""Array of operation codes that consume reference bases."""
+
+ADV_REF_ARR: np.typing.NDArray[np.integer] = np.array([M, EQ, X, D])
+"""Array of operation codes that advance the reference position."""
+
+ADV_QRY_ARR: np.typing.NDArray[np.integer] = np.array([M, EQ, X, I, S, H])
+"""Array of operation codes that advance the query position."""
+
+VAR_ARR: np.typing.NDArray[np.integer] = np.array([X, I, D])
+"""Array of operation codes that introduce variation."""
 
 
-def cigar_as_array(
+def cigar_to_arr(
         cigar_str: str
 ) -> np.ndarray:
-    """
-    Get a numpy array with two dimensions (dtype int). The first column is the operation codes, the second column is the
-    operation lengths.
+    """Get a numpy array with two dimensions (dtype int).
+
+    The first column is the operation codes, the second column is the operation lengths.
 
     :param cigar_str: CIGAR string.
 
-    :return: Array of operation codes and lengths (dtype int).
-    """
+    :returns: Array of operation codes and lengths (dtype int).
 
+    :raises ValueError: If the CIGAR string is not properly formatted.
+    """
     pos = 0
     max_pos = len(cigar_str)
 
@@ -82,10 +159,10 @@ def cigar_as_array(
             len_pos += 1
 
         if len_pos == pos:
-            raise RuntimeError(f'Missing length in CIGAR string at index {pos}')
+            raise ValueError(f'Missing length in CIGAR string at index {pos}')
 
         if cigar_str[len_pos] not in CIGAR_OP_SET:
-            raise RuntimeError(f'Unknown CIGAR operation {cigar_str[pos]}')
+            raise ValueError(f'Unknown CIGAR operation {cigar_str[len_pos]}')
 
         op_tuples.append(
             (OP_CODE[cigar_str[len_pos]], int(cigar_str[pos:len_pos]))
@@ -94,113 +171,3 @@ def cigar_as_array(
         pos = len_pos + 1
 
     return np.array(op_tuples)
-
-def to_cigar_string(
-        op_arr: np.ndarray
-):
-    """
-    Generate a CIGAR string from operation codes.
-
-    :param op_arr: Array of operations (n x 2, op_code/op_len columns).
-
-    :return: A CIGAR string.
-    """
-
-    return ''.join(
-        np.char.add(
-            op_arr[:, 1].astype(str),
-            OP_CHAR_FUNC(op_arr[:, 0])
-        )
-    )
-
-def clip_soft_to_hard(
-        op_arr: np.ndarray
-) -> np.ndarray:
-    """
-    Shift soft clipped bases to hard clipped bases.
-
-    :param op_arr: Array of operations (n x 2, op_code/op_len columns).
-
-    :return: Array of operations (n x 2, op_code/op_len columns).
-    """
-
-    clip_l = 0
-    clip_l_i = 0
-    clip_r = 0
-    clip_r_i = op_arr.shape[0]
-
-    while clip_l_i < clip_r_i and op_arr[clip_l_i, 0] in CLIP_SET:
-        clip_l += op_arr[clip_l_i, 1]
-        clip_l_i += 1
-
-    while clip_r_i > clip_l_i and op_arr[clip_r_i - 1, 0] in CLIP_SET:
-        clip_r += op_arr[clip_r_i - 1, 1]
-        clip_r_i -= 1
-
-    if clip_r_i == clip_l_i:
-        if op_arr.shape[0] > 0:
-            raise RuntimeError(f'Alignment consists only of clipped bases')
-
-        return op_arr
-
-    if clip_l > 0:
-        op_arr = np.append([(H, clip_l)], op_arr[clip_l_i:], axis=0)
-
-    if clip_r > 0:
-        op_arr = np.append(op_arr[:clip_r_i], [(H, clip_r)], axis=0)
-
-    return op_arr
-
-def op_arr_add_coords(op_arr, pos_ref=0, add_index=True):
-    """
-    Take an operation array (n x 2, op_code/op_len columns), add coordinate and index columns.
-
-    Columns:
-        0: Operation code
-        1: Operation length
-        2: Reference position
-        4: Query position
-        3: Index (optional, first record is 0, second is 1, etc). Allows a rows to be dropped while keeping a record of
-            of the operation index.
-
-    :param op_arr: Array of operations (n x 2, op_code/op_len columns).
-    :param pos_ref: First aligned reference base in the sequence. Note the query position is determined by following
-        clipping and alignment operations.
-    :param add_index: Add index column.
-
-    :return: Array of operations (n x 4 or n x 5) with columns described above.
-    """
-
-    adv_ref_arr = op_arr[:, 1] * np.isin(op_arr[:, 0], ADV_REF_ARR)
-    adv_qry_arr = op_arr[:, 1] * np.isin(op_arr[:, 0], ADV_QRY_ARR)
-
-    ref_pos_arr = np.cumsum(adv_ref_arr) - adv_ref_arr + pos_ref
-    qry_pos_arr = np.cumsum(adv_qry_arr) - adv_qry_arr
-
-    # Check for zero-length operations (no operation or bad CIGAR length)
-    if np.any((adv_ref_arr + adv_qry_arr) == 0):
-        no_op_arr = op_arr[(adv_ref_arr + adv_qry_arr == 0) & (op_arr[:, 1] > 0)]
-        no_len_arr = op_arr[op_arr[:, 1] == 0]
-
-        op_set = ', '.join(sorted(set(no_op_arr[:, 0].astype(str))))
-        len_set = ', '.join(sorted(set(no_len_arr[:, 0].astype(str))))
-
-        if op_set:
-            raise RuntimeError(f'Unexpected operations in CIGAR string at {align_index}: operation code(s) "{op_set}"')
-
-        if len_set:
-            raise RuntimeError(f'Zero-length operations CIGAR string at {align_index}: operation code(s) "{len_set}"')
-
-    if add_index:
-        return np.concatenate([
-            op_arr,
-            np.expand_dims(ref_pos_arr, axis=1),
-            np.expand_dims(qry_pos_arr, axis=1),
-            np.expand_dims(np.arange(op_arr.shape[0]), axis=1)
-        ], axis=1)
-    else:
-        return np.concatenate([
-            op_arr,
-            np.expand_dims(ref_pos_arr, axis=1),
-            np.expand_dims(qry_pos_arr, axis=1)
-        ], axis=1)

@@ -1,75 +1,108 @@
-"""
-Alignment routines.
-"""
+"""Alignment routines."""
 
-import abc
+__all__ = [
+    'AFFINE_SCORE_MATCH',
+    'AFFINE_SCORE_MISMATCH',
+    'AFFINE_SCORE_GAP',
+    'AFFINE_SCORE_TS',
+    'DEFAULT_ALIGN_SCORE_MODEL',
+    'ScoreModel',
+    'AffineScoreModel',
+    'get_score_model',
+    'get_affine_by_params',
+]
+
+from abc import ABC, abstractmethod
 import numpy as np
 import re
+from typing import Any, Iterable, Self
 
 from . import op
 
 AFFINE_SCORE_MATCH = 2.0
+"""Default match score."""
+
 AFFINE_SCORE_MISMATCH = 4.0
+"""Default mismatch score."""
+
 AFFINE_SCORE_GAP = ((4.0, 2.0), (24.0, 1.0))
+"""Default affine gap scores."""
+
 AFFINE_SCORE_TS = None
+"""Default template switch score."""
 
-DEFAULT_ALIGN_SCORE_MODEL = f'affine::match={AFFINE_SCORE_MATCH},mismatch={AFFINE_SCORE_MISMATCH},gap={";".join([f"{gap_open}:{gap_extend}" for gap_open, gap_extend in AFFINE_SCORE_GAP])}'
+DEFAULT_ALIGN_SCORE_MODEL = (
+    f'affine::match={AFFINE_SCORE_MATCH},'
+    f'mismatch={AFFINE_SCORE_MISMATCH},'
+    f'gap={";".join([f"{gap_open}:{gap_extend}" for gap_open, gap_extend in AFFINE_SCORE_GAP])}'
+)
+"""Default alignment score model."""
 
-class ScoreModel(object, metaclass=abc.ABCMeta):
-    """
-    Score model interface.
-    """
 
-    @abc.abstractmethod
-    def match(self, n=1):
-        """
-        Score match.
+class ScoreModel(ABC):
+    """Score model interface."""
+
+    @abstractmethod
+    def match(
+            self,
+            n: int = 1
+    ) -> float:
+        """Score match.
 
         :param n: Number of matching bases.
-        """
 
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def mismatch(self, n=1):
+        :returns: Match score.
         """
-        Score mismatch.
+        pass
+
+    @abstractmethod
+    def mismatch(
+            self,
+            n: int = 1
+    ) -> float:
+        """Score mismatch.
 
         :param n: Number of mismatched bases.
-        """
 
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def gap(self, n=1):
+        :returns: Mismatch score.
         """
-        Score gap (insertion or deletion). Compute all affine aligment gap scores and return the lowest.
+        pass
+
+    @abstractmethod
+    def gap(
+            self,
+            n: int = 1
+    ) -> float:
+        """Score gap (insertion or deletion).
+
+        Compute all affine alignment gap score for each affine
+        segment and return the highest value (least negative).
 
         :param n: Size of gap.
+
+        :returns: Gap score.
+        """  # noqa: D402
+        pass
+
+    def template_switch(self) -> float:
+        """Score a template switch.
+
+        :returns: Score for a single template switch.
         """
+        return 2 * self.gap(50)
 
-        raise NotImplementedError
+    def score(
+            self,
+            op_code: int | str,
+            op_len: int,
+    ) -> float:
+        """Score an alignment operation.
 
-    @abc.abstractmethod
-    def template_switch(self):
+        :param op_code: Operation code. Can be a symbol (e.g. "=", "X", "I", etc.) or the numeric operation code.
+        :param op_len: Operation length.
+
+        :returns: Score for this operation or 0.0 if the operation is not scored (S, H, N, and P operations).
         """
-        Score a template switch.
-
-        :return: Template switch score.
-        """
-
-        raise NotImplementedError
-
-    def score(self, op_code, op_len):
-        """
-        Score a CIGAR operation and return 0 if the operation is not scored (S, H, N, and P CIGAR operations). The
-        CIGAR operations may be a capital letter or symbol (e.g. "=", "X", "I", etc.) on the numeric CIGAR operation
-        code (defined in `pavlib.align.util`).
-
-        :param op_len: CIGAR operation length.
-        :param op_code: CIGAR operation code, must be capitalized.
-        """
-
         if op_code in {'=', op.EQ}:
             return self.match(op_len)
 
@@ -91,67 +124,86 @@ class ScoreModel(object, metaclass=abc.ABCMeta):
         else:
             raise RuntimeError(f'Unrecognized CIGAR op code: {op_code}')
 
-    def score_operations(self,
-                         op_arr: np.ndarray,
-                         ) -> float:
-        """
-        A vectorized implementation of summing scores for affine models.
+    def score_operations(
+            self,
+            op_arr: np.ndarray,
+    ) -> float:
+        """A vectorized implementation of summing scores for affine models.
 
         :param op_arr: Array of alignment operations (op_code: first column, op_len: second column).
 
-        :return: Sum of scores for each CIGAR operation.
+        :returns: Sum of scores for each CIGAR operation.
         """
-
         return np.sum(np.vectorize(self.score)(op_arr[:, 0], op_arr[:, 1]))
 
-    @abc.abstractmethod
-    def mismatch_model(self):
-        """
-        Return a copy of this score model that does not penalize gaps. Used for computing the score of mismatches.
-        """
-        raise NotImplementedError
+    @abstractmethod
+    def mismatch_model(self) -> Self:
+        """Get a mismatch model.
 
-    @abc.abstractmethod
-    def model_param_string(self):
+        :returns: A copy of this score model that does not penalize gaps. Used for computing the score of mismatches.
         """
-        Return a parameter string for this score model.
+        pass
+
+    @abstractmethod
+    def model_param_string(self) -> str:
+        """Get score parameter string.
+
+        :returns: A parameter string representing this score model.
         """
-        raise NotImplementedError
+        pass
 
-    @abc.abstractmethod
-    def __eq__(self, other):
-        raise NotImplementedError
+    @abstractmethod
+    def __eq__(
+            self,
+            other: Any
+    ) -> bool:
+        """Determine if this scoremodel is the same as another.
 
-    @abc.abstractmethod
+        :param other: Other object.
+
+        :returns: True if this scoremodel is equivalent to `other`.
+        """
+        pass
+
+    @abstractmethod
     def __repr__(self):
-        return 'ScoreModel(Interface)'
+        """Get a string representation of this score model."""
+        pass
 
 
 class AffineScoreModel(ScoreModel):
+    """Affine score model with default values modeled on minimap2 (2.26) default parameters.
+
+    :ivar match: Match score.
+    :ivar mismatch: Mismatch penalty.
+    :ivar affine_gap: An iterable containing tuples of two elements (gap open, gap extend).
+    :ivar template_switch: Template switch penalty. If none, defaults to 2x the penalty of a 50 bp gap.
+    """
+
     score_match: float
     score_mismatch: float
     score_affine_gap: tuple
     score_template_switch: float
-    """
-    Affine score model with default values modeled on minimap2 (2.26) default parameters.
 
-    :param match: Match score [2].
-    :param mismatch: Mismatch penalty [4].
-    :param affine_gap: A list of tuples of two elements (gap open, gap extend) penalty.
-    :param template_switch: Template switch penalty. If none, defaults to 2x the penalty of a 50 bp gap.
-    """
+    def __init__(
+            self,
+            match: float = AFFINE_SCORE_MATCH,
+            mismatch: float = AFFINE_SCORE_MISMATCH,
+            affine_gap: Iterable[tuple[float, float]] = AFFINE_SCORE_GAP,
+            template_switch: float = AFFINE_SCORE_TS
+    ) -> None:
+        """Initialize an affine score model.
 
-    def __init__(self,
-             match: float=AFFINE_SCORE_MATCH,
-             mismatch: float=AFFINE_SCORE_MISMATCH,
-             affine_gap: float=AFFINE_SCORE_GAP,
-             template_switch: float=AFFINE_SCORE_TS
-         ):
-        self.score_match = np.abs(match)
-        self.score_mismatch = -np.abs(mismatch)
+        :param match: Match score.
+        :param mismatch: Mismatch score.
+        :param affine_gap: Iterable of tuples (gap_open, gap_extend) for affine gap penalties.
+        :param template_switch: Template switch score.
+        """
+        self.score_match = abs(float(match))
+        self.score_mismatch = -abs(float(mismatch))
         self.score_affine_gap = tuple((
-            (-np.abs(gap_open), -np.abs(gap_extend))
-                for gap_open, gap_extend in affine_gap
+            (-abs(float(gap_open)), -abs(float(gap_extend)))
+            for gap_open, gap_extend in affine_gap
         ))
 
         if template_switch is None:
@@ -159,57 +211,68 @@ class AffineScoreModel(ScoreModel):
         else:
             try:
                 self.score_template_switch = - np.abs(float(template_switch))
-            except ValueError:
-                raise ValueError(f'template_switch parameter is not numeric: {template_switch}')
+            except ValueError as e:
+                raise ValueError(f'template_switch parameter is not numeric: {template_switch}') from e
 
-    def match(self, n: int=1) -> float:
-        """
-        Score match.
+    def match(
+            self,
+            n: int = 1
+    ) -> float:
+        """Score match.
 
         :param n: Number of matching bases.
-        """
 
+
+        :returns: Match score.
+        """
         return self.score_match * n
 
-    def mismatch(self, n: int=1) -> float:
-        """
-        Score mismatch.
+    def mismatch(
+            self,
+            n: int = 1
+    ) -> float:
+        """Score mismatch.
 
         :param n: Number of mismatched bases.
-        """
 
+        :returns: Mismatch score.
+        """
         return self.score_mismatch * n
 
-    def gap(self, n: int=1) -> float:
-        """
-        Score gap (insertion or deletion). Compute all affine alignment gap scores and return the lowest penalty.
+    def gap(
+            self,
+            n: int = 1
+    ) -> float:
+        """Score gap (insertion or deletion).
+
+        Compute all affine alignment gap score for each affine
+        segment and return the highest value (least negative).
 
         :param n: Size of gap.
-        """
 
+        :returns: Gap score.
+        """  # noqa: D402
         if n == 0.0:
             return 0.0
 
         return np.max(
             [
                 gap_open + (gap_extend * n)
-                    for gap_open, gap_extend in self.score_affine_gap
+                for gap_open, gap_extend in self.score_affine_gap
             ]
         )
 
     def template_switch(self) -> float:
-        """
-        Score a template switch.
+        """Score a template switch.
 
-        :return: Template switch score.
+        :returns: Score for a single template switch.
         """
         return self.score_template_switch
 
-    def mismatch_model(self) -> ScoreModel:
-        """
-        Create a version of this model that scores only mismatches (ignores gaps). Thd mismatch model retains the
-        template-switch penalty based on the original model even if it was derived from gap scores. A new model
-        is returned and this model is not altered.
+    def mismatch_model(self) -> Self:
+        """Get a mismatch model.
+
+        :returns: A copy of this score model that does not penalize gaps. Used for computing the score of mismatches.
         """
         return AffineScoreModel(
             match=self.score_match,
@@ -218,17 +281,16 @@ class AffineScoreModel(ScoreModel):
             template_switch=self.score_template_switch
         )
 
-    def score_operations(self,
-                         op_arr: np.ndarray
-                         ) -> float:
-        """
-        A vectorized implementation of summing scores for affine models.
+    def score_operations(
+            self,
+            op_arr: np.ndarray,
+    ) -> float:
+        """A vectorized implementation of summing scores for affine models.
 
         :param op_arr: Array of alignment operations (op_code: first column, op_len: second column).
 
-        :return: Sum of scores for each CIGAR operation.
+        :returns: Sum of scores for each CIGAR operation.
         """
-
         if np.any(op_arr[:, 0] == op.M):
             raise RuntimeError('Cannot score alignments with match ("M") in CIGAR string (requires "=" and "X")')
 
@@ -241,44 +303,69 @@ class AffineScoreModel(ScoreModel):
             gap_score[:, 1] = gap_open + gap_arr * gap_extend
             gap_score[:, 0] = np.max(gap_score, axis=1)
 
-        return \
-                np.sum(op_arr[:, 1] * (op_arr[:, 0] == op.EQ) * self.score_match) + \
-                np.sum(op_arr[:, 1] * (op_arr[:, 0] == op.X) * self.score_mismatch) + \
-                np.nan_to_num(gap_score[:, 0], neginf=0.0).sum()  # If no gap penalties (i.e. mismatch model), then gap_score is -inf (set to 0.0)
+        return float(
+                np.sum(op_arr[:, 1] * (op_arr[:, 0] == op.EQ) * self.score_match)
+                + np.sum(op_arr[:, 1] * (op_arr[:, 0] == op.X) * self.score_mismatch)
+                # If no gap penalties (i.e. mismatch model), then gap_score is -inf (set to 0.0)
+                + np.nan_to_num(gap_score[:, 0], neginf=0.0).sum()
+        )
 
-    def model_param_string(self):
-        return f'affine::match={self.score_match},mismatch={self.score_mismatch},gap={";".join([f"{gap_open}:{gap_extend}" for gap_open, gap_extend in self.score_affine_gap])}'
+    def model_param_string(self) -> str:
+        """Get score parameter string.
 
-    def __eq__(self, other):
+        :returns: A parameter string representing this score model.
+        """
+        return (
+            f'affine::match={self.score_match},'
+            f'mismatch={self.score_mismatch},'
+            f'gap={";".join([f"{gap_open}:{gap_extend}" for gap_open, gap_extend in self.score_affine_gap])}'
+        )
 
+    def __eq__(
+            self,
+            other: Any
+    ) -> bool:
+        """Determine if this scoremodel is the same as another.
+
+        :param other: Other object.
+
+        :returns: True if this scoremodel is equivalent to `other`.
+        """
         if other is None or not isinstance(other, self.__class__):
             return False
 
-        return \
-                self.score_match == other.score_match and \
-                self.score_mismatch == other.score_mismatch and \
-                self.score_affine_gap == other.score_affine_gap and \
-                self.score_template_switch == other.score_template_switch
+        return (
+                self.score_match == other.score_match
+                and self.score_mismatch == other.score_mismatch
+                and self.score_affine_gap == other.score_affine_gap
+                and self.score_template_switch == other.score_template_switch
+        )
 
     def __repr__(self):
+        """Get a string representation of this score model."""
         gap_str = ';'.join([f'{abs(gap_open)}:{abs(gap_extend)}' for gap_open, gap_extend in self.score_affine_gap])
 
-        return f'AffineScoreModel(match={self.score_match},mismatch={-self.score_mismatch},gap={gap_str},ts={-self.score_template_switch})'
+        return (
+            f'AffineScoreModel('
+            f'match={self.score_match},'
+            f'mismatch={-self.score_mismatch},'
+            f'gap={gap_str},'
+            f'ts={-self.score_template_switch}'
+            f')'
+        )
 
 
 def get_score_model(
-        param_string: str=None
+        param_string: str = None
 ) -> ScoreModel:
+    """Get score model from a string of alignment parameters.
+
+    :param param_string: Parameter string. Can be None or an empty string (default model is used). If
+        the string is an instance of `ScoreModel`, then the `ScoreModel` object is returned.
+        Otherwise, the string is parsed and a score model object is returned.
+
+    :returns: A `ScoreModel` object.
     """
-    Get score model from a string of alignment parameters.
-
-    :param param_string: Parameter string. May be None or an empty string (default model is used). If the string is
-        an instance of `ScoreModel`, then the `ScoreModel` object is returned. Otherwise, the string is parsed and
-        a score model object is returned.
-
-    :return: A `ScoreModel` object.
-    """
-
     if isinstance(param_string, ScoreModel):
         return param_string
 
@@ -299,17 +386,16 @@ def get_score_model(
 
     raise RuntimeError(f'Unrecognized score model type: {model_type}')
 
+
 def get_affine_by_params(
         param_string: str
 ) -> AffineScoreModel:
-    """
-    Parse a string to get alignment parameters from it.
+    """Parse a string to get alignment parameters from it.
 
     :param param_string: Parameter string.
 
-    :return: A configured AffineScoreModel.
+    :returns: A configured AffineScoreModel.
     """
-
     # Set defaults
     params = [
         AFFINE_SCORE_MATCH,
@@ -350,7 +436,10 @@ def get_affine_by_params(
 
         else:
             if param_pos is None:
-                raise RuntimeError(f'Named parameters (with "=") must be specified after positional parameters (no "="): {param_string}')
+                raise RuntimeError(
+                    f'Named parameters (with "=") must be specified after positional parameters (no "="): '
+                    f'{param_string}'
+                )
 
             key = keys[param_pos]
             val = tok
@@ -377,14 +466,20 @@ def get_affine_by_params(
                 gap_tok = gap_pair.split(':')
 
                 if len(gap_tok) != 2:
-                    raise RuntimeError(f'Unrecognized gap format: Expected "open:extend" for each element (multiple pairs separated by ";"): "{gap_pair}" in {val}')
+                    raise RuntimeError(
+                        f'Unrecognized gap format: Expected "open:extend" for each element '
+                        f'(multiple pairs separated by ";"): "{gap_pair}" in {val}'
+                    )
 
                 try:
                     gap_open = abs(float(gap_tok[0].strip()))
                     gap_extend = abs(float(gap_tok[1].strip()))
 
                 except ValueError:
-                    raise RuntimeError(f'Unrecognized gap format: Expected integer values for "open:extend" for each gap cost element: {val}')
+                    raise RuntimeError(
+                        f'Unrecognized gap format: Expected integer values for "open:extend" '
+                        f'for each gap cost element: {val}'
+                    )
 
                 gap_list.append((gap_open, gap_extend))
 

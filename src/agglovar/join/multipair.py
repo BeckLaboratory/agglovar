@@ -1,17 +1,20 @@
-"""
-Run and reconcile multiple pairwise intersects.
-"""
+"""Run and reconcile multiple pairwise intersects."""
+
+__all__ = [
+    'DEFAULT_PRIORITY_MATCH',
+    'DEFAULT_PRIORITY_NOMATCH',
+    'MultiPair',
+    'get_weight_expr',
+]
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 import polars as pl
 
 from .pair import PairwiseIntersect
 
-# Priority order is a tuple of:
-# 1. Column name
-# 2. Weight
-# 3. Location of weight 0.0 (weight is inversely proportional to field if not None)
+
 DEFAULT_PRIORITY_MATCH = [
     ('ro', 0.2, None),
     ('size_ro', 0.2, None),
@@ -19,39 +22,54 @@ DEFAULT_PRIORITY_MATCH = [
     ('match_prop', 0.5, None)
 ]
 
-DEFAULT_PRIORITY_NOMATCH = [
+"""
+Default priority for joined pairs of variants if sequence matching was used.
+
+Priority order is a tuple of:
+    1. Column name
+    2. Weight
+    3. Location of weight 0.0 (weight is inversely proportional to field if not None)
+"""
+
+DEFAULT_PRIORITY_NOMATCH: tuple[tuple[str, float, Optional[float]], ...] = (
     ('ro', 0.4, None),
     ('size_ro', 0.4, None),
     ('offset_prop', 0.2, 2.0),
-]
+)
+"""
+Default priority for joined pairs of variants if sequence matching was not used.
+
+Priority order is a tuple of:
+    1. Column name
+    2. Weight
+    3. Location of weight 0.0 (weight is inversely proportional to field if not None)
+"""
+
 
 @dataclass(frozen=True)
 class MultiPair:
-    """
-    Run multiple pairwise joins and produce a unified join table.
+    """Run multiple pairwise joins and produce a unified join table.
 
-    Attributes:
-        is_locked: `True` if this object is locked and cannot be modified.
+    :ivar is_locked: `True` if this object is locked and cannot be modified.
     """
 
-    _pairwise_list: list[tuple[PairwiseIntersect, pl.Expr]] = field(default_factory=list, init=False,repr=False)
+    _pairwise_list: list[tuple[PairwiseIntersect, pl.Expr]] = field(default_factory=list, init=False, repr=False)
     is_locked: bool = field(default=False, init=False, repr=False)
 
     def __init__(self):
+        """Initialize a MultiPair object."""
         pass
 
     def add_join(
             self,
             intersect: PairwiseIntersect,
-            weight_expr: pl.Expr|list[tuple[str,float,float]]=None
+            weight_expr: pl.Expr | list[tuple[str, float, float]] = None
     ) -> None:
-        """
-        Add a pairwise intersect.
+        """Add a pairwise intersect.
 
         :param intersect: Intersect object.
         :param weight_expr: Expression to compute weights for prioritizing join records.
         """
-
         if self.is_locked:
             raise AttributeError('Pairwise intersect object is locked and cannot be modified.')
 
@@ -78,14 +96,12 @@ class MultiPair:
             self,
             df_a: pl.DataFrame,
             df_b: pl.DataFrame,
-            collect: bool=False
+            collect: bool = False
     ) -> pl.DataFrame:
-        """
-        Join all pairwise intersects.
+        """Join all pairwise intersects.
 
-        :return: A join table.
+        :returns: A join table.
         """
-
         join_list = list()
 
         for i, (pairwise_join, weight_expr) in enumerate(self._pairwise_list):
@@ -106,17 +122,16 @@ class MultiPair:
             .unique(['index_a', 'index_b'], keep='first')
         )
 
+
 def get_weight_expr(
-    priority: list[tuple[str,float,float]]
-):
-    """
-    Get an expression to compute weights for prioritizing join records.
+    priority: list[tuple[str, float, float]]
+) -> pl.Expr:
+    """Get an expression to compute weights for prioritizing join records.
 
     :param priority: A list of (column, weight, max_value) tuples.
 
-    :return: An expression to compute weights.
+    :returns: An expression to compute weights.
     """
-
     return pl.sum_horizontal(
         *[
             (

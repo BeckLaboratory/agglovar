@@ -1,45 +1,49 @@
-"""
-Rountines for generating dotplots.
-"""
+"""Routines for generating dotplots."""
+
+__all__ = [
+    'dotplot',
+]
 
 import collections
 import numpy as np
-import typing
+from typing import Any
 
 from . import util as kmer_util
 
 # Get type hints for optional matplotlib objects
-t_mpl_Figure = typing.Any
+t_mpl_Figure = Any
+t_mpl_Axes = Any
 
 try:
     import matplotlib.pyplot
+    import matplotlib.axes
     t_mpl_Figure = matplotlib.pyplot.Figure
+    t_mpl_Axes = matplotlib.axes.Axes
 except ImportError:
     pass
 
-#
-# Functions
-#
 
 def dotplot(
         seq_x: str,
         seq_y: str,
-        config: dict=None,
-        title: str=None,
-        anno_list: list[dict]=None
+        config: dict = None,
+        title: str = None,
+        anno_list: list[dict] = None
 ) -> t_mpl_Figure:
+    """Generate a dotplot for two sequences.
+
+    :params seq_x: Sequence 1 (horizontal axis).
+    :params seq_y: Sequence 2 (vertical axis).
+    :params config: Configuration dictionary.
+    :params title: Figure title.
+    :params anno_list: List of annotations.
+
+    :returns: A matplotlib figure.
+
+    :raises ImportError: If matplotlib is not installed.
+    :raises ValueError: If an invalid value is provided for an argument.
+    :raises KeyError: If `anno_list` contains annotation definitions that are missing required elements.`
     """
-    Generate a dotplot for two sequences.
-
-    :param seq_x: Sequence 1 (horizontal axis).
-    :param seq_y: Sequence 2 (vertical axis).
-    :param config: Configuration dictionary.
-    :param title: Figure title.
-    :param anno_list: List of annotations.
-
-    :return: A matplotlib figure.
-    """
-
     try:
         import matplotlib as mpl
         import matplotlib.pyplot as plt
@@ -69,14 +73,16 @@ def dotplot(
         if color.lower() in {'reverse', 'rev'}:
             color = ('red', 'black')
         else:
-            raise RuntimeError(f'Argument color is a string: Must be "reverse" or "rev": {color}')
+            raise ValueError(f'Argument color is a string: Must be "reverse" or "rev": {color}')
 
     elif isinstance(color, (list, tuple)):
         if len(color) != 2:
-            raise RuntimeError(f'Argument color is a list or tuple: Must have two elements (fwd color, rev color): length={len(color)}')
+            raise ValueError(
+                f'Argument color is a list or tuple: Must have two elements (fwd color, rev color): length={len(color)}'
+            )
 
     else:
-        raise RuntimeError(f'Argument color is not a list, tuple, or "reverse" keyword: type={type(color)}')
+        raise ValueError(f'Argument color is not a list, tuple, or "reverse" keyword: type={type(color)}')
 
     # Get sequence labels and start positions
     label_x = config.get('label_x', 'Sequence')
@@ -185,7 +191,6 @@ def dotplot(
 
         lines_rev.append(((x_start, y_start), (x_end, y_end)))
 
-
     # Make plot
     fig = plt.figure(figsize=(plot_width, plot_height), dpi=plot_dpi)
 
@@ -193,7 +198,7 @@ def dotplot(
 
     # Background annotations
     for anno_element in anno_list_background:
-       _plot_anno_element(ax1, anno_element, plot_props)
+        _plot_anno_element(ax1, anno_element, plot_props)
 
     # Dot plot points (as connected lines)
     for (x1, y1), (x2, y2) in lines_fwd:
@@ -204,7 +209,7 @@ def dotplot(
 
     # Foreground annotations
     for anno_element in anno_list_foreground:
-       _plot_anno_element(ax1, anno_element, plot_props)
+        _plot_anno_element(ax1, anno_element, plot_props)
 
     # Set x and y ranges
     ax1.set_xlim((start_x, start_x + len(seq_x)))
@@ -242,12 +247,25 @@ def dotplot(
     # Return figure
     return fig
 
-def _plot_anno_element(ax, anno_element, plot_props):
 
+def _plot_anno_element(
+        ax: t_mpl_Axes,
+        anno_element: dict[str, Any],
+        plot_props: dict[str, Any]
+):
+    """Plot an annotation element.
+
+    :param ax: Plot axes object to to plot on.
+    :param anno_element: Annotation element.
+    :param plot_props: Plot properties.
+
+    :raises AttributeError: If an annotation type is unknown.
+    :raises KeyError: If required values are missing from `anno_element` or `plot_props`.
+    """
     anno_element_index = anno_element.get('index')
 
     if 'type' not in anno_element:
-        raise RuntimeError(
+        raise KeyError(
             'Missing annotation type: "annotype" for annotation list element {}'.format(anno_element_index)
         )
 
@@ -255,7 +273,7 @@ def _plot_anno_element(ax, anno_element, plot_props):
 
     if type == 'vshade':
         if 'x1' not in anno_element or 'x2' not in anno_element:
-            raise RuntimeError(
+            raise KeyError(
                 'Missing x1 and/or x2 for vshade annotation: element {}'.format(anno_element_index)
             )
 
@@ -268,7 +286,7 @@ def _plot_anno_element(ax, anno_element, plot_props):
 
     elif type == 'hshade':
         if 'y1' not in anno_element or 'y2' not in anno_element:
-            raise RuntimeError(
+            raise KeyError(
                 'Missing y1 and/or y2 for hshade annotation: element {}'.format(anno_element_index)
             )
 
@@ -284,17 +302,17 @@ def _plot_anno_element(ax, anno_element, plot_props):
 
     elif type == 'hlines' or type == 'hline':
         if 'y' not in anno_element:
-            raise RuntimeError(
+            raise KeyError(
                 'Missing y for hlines annotation: element {}'.format(anno_element_index)
             )
 
         if 'xmin' not in anno_element:
-            raise RuntimeError(
+            raise KeyError(
                 'Missing xmin for hlines annotation: element {}'.format(anno_element_index)
             )
 
         if 'xmax' not in anno_element:
-            raise RuntimeError(
+            raise KeyError(
                 'Missing xmax for hlines annotation: element {}'.format(anno_element_index)
             )
 
@@ -310,17 +328,17 @@ def _plot_anno_element(ax, anno_element, plot_props):
     elif type == 'vlines' or type == 'vline':
 
         if 'x' not in anno_element:
-            raise RuntimeError(
+            raise KeyError(
                 'Missing x for vlines annotation: element {}'.format(anno_element_index)
             )
 
         if 'ymin' not in anno_element:
-            raise RuntimeError(
+            raise KeyError(
                 'Missing ymin for vlines annotation: element {}'.format(anno_element_index)
             )
 
         if 'ymax' not in anno_element:
-            raise RuntimeError(
+            raise KeyError(
                 'Missing ymax for vlines annotation: element {}'.format(anno_element_index)
             )
 
@@ -334,4 +352,4 @@ def _plot_anno_element(ax, anno_element, plot_props):
         )
 
     else:
-        raise RuntimeError('Unknown annotation type: {}'.format(type))
+        raise ValueError('Unknown annotation type: {}'.format(type))

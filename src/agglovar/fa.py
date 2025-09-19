@@ -1,10 +1,9 @@
-"""
-FASTA processing utilities.
-"""
+"""Reference and FASTA processing utilities."""
 
-"""
-Reference and FASTA processing utilities.
-"""
+__all__ = [
+    'read_fai',
+    'fa_info',
+]
 
 import hashlib
 from pathlib import Path
@@ -15,25 +14,25 @@ import polars as pl
 
 from . import io
 
+
 def read_fai(
         fai_file_name: str | Path,
         cols: Optional[Iterable[str]] = ('chrom', 'len'),
         name: str = None
 ) -> pl.DataFrame:
-    """
-    Read an FAI File name. By default, return a Series of chromosome lengths keyed by the chromosome (or contig) name.
+    """Read an FAI File name.
+
+    By default, return a Series of chromosome lengths keyed by the chromosome (or contig) name.
 
     Available columns are: chrom, len, pos, line_bp, line_bytes
 
-    Args:
-        fai_file_name: File to read.
-        cols: Select these columns. None to retain all columns.
-        name: Name of the chromosome column (typically "qry_id" to match query alignment tables).
+    :param fai_file_name: File to read.
+    :param cols: Select these columns. None to retain all columns.
+    :param name: Name of the chromosome column (typically "qry_id" to match query alignment tables).
 
-    Returns:
-        A table of the FAI file.
+
+    :returns: A table of the FAI file.
     """
-
     fai_cols = ['chrom', 'len', 'pos', 'line_bp', 'line_bytes']
 
     schema = {
@@ -64,10 +63,9 @@ def read_fai(
 def fa_info(
         ref_fa: str | Path
 ) -> pl.DataFrame:
-    """
-    Get a table of reference information from a FASTA file. FASTA must have a ".fai".
+    """Get a table of reference information from a FASTA file.
 
-    'chrom', 'len', 'pos', 'line_bp', 'line_bytes'
+    FASTA must have a ".fai".
 
     Table columns:
         chrom: Chromosome name.
@@ -77,13 +75,10 @@ def fa_info(
         line_bp: Number of base pairs per line.
         line_bytes: Number of bytes per line.
 
-    Args:
-        ref_fa: Reference FASTA.
+    :param ref_fa: Reference FASTA.
 
-    Returns:
-        A table with sequence information.
+    :returns: A table with sequence information.
     """
-
     # Read FAI
     record_list = list()
     record_count = 0

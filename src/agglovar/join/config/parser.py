@@ -1,31 +1,36 @@
 """
-Lexer and parser for intersect configuration strings. Contains code for parsing string and generating an AST from
-according to grammar rules. Downstream objects will generate a configuration object from the AST.
+Lexer and parser for intersect configuration strings. Contains code for
+parsing string and generating an AST from according to grammar rules.
+Downstream objects will generate a configuration object from the AST.
 """
+
+__all__ = [
+    'IntersectConfigLexer',
+    'IntersectConfigParser',
+]
 
 import ply.lex
 import ply.yacc
 
 from typing import Any
 
-class IntersectConfigLexer(object):
-    """
-    Token lexer for intersect configuration strings.
-    """
 
-    lexer: ply.lex.lex
+class IntersectConfigLexer(object):
+    """Token lexer for intersect configuration strings."""
+
+    lexer: ply.lex.Lexer
     tokens: tuple[str]
     literals: tuple[str]
 
-    def __init__(self,
-        **kwdargs: dict
+    def __init__(
+            self,
+            **kwdargs: dict
     ):
-        """
-        Initialize lexer.
+        """Initialize lexer.
 
-        :param kwdargs: Passed to `ply.lex.lex`
+        Keyword arguments are passed to `ply.lex.lex`.
 
-        :raises Exception: If the ply lexer throws an exception. May throw a range of exeception types.
+        :raises Exception: If the ply lexer throws an exception. May throw a range of exception types.
         """
         self.lexer = ply.lex.lex(module=self, **kwdargs)
 
@@ -44,14 +49,15 @@ class IntersectConfigLexer(object):
     literals = [':', ';', ',', '=', '(', ')', '[', ']']
 
     # Parse numbers
-    def parse_float(self,
-        str_val: str
+    def parse_float(
+            self,
+            str_val: str
     ) -> float:
-        """
-        Parse float from string.
+        """Parse float from string.
 
-        :param str_val: String.
-        :return: Float value.
+        :param str_val: String to parse.
+
+        :returns: Float value.
 
         :raises ValueError: If the string does not represent a float value.
         """
@@ -62,20 +68,20 @@ class IntersectConfigLexer(object):
         else:
             exp = 0
 
-        return float(str_val) * 10 **float(exp)
+        return float(str_val) * 10 ** float(exp)
 
-    def parse_int(self,
-        str_val: str
+    def parse_int(
+            self,
+            str_val: str
     ) -> int:
-        """
-        Parse int from string.
+        """Parse int from string.
 
-        :param str_val: String.
-        :return: Integer value.
+        :param str_val: String to parse.
+
+        :returns: Integer value.
 
         :raises ValueError: If the string does not represent an int value.
         """
-
         str_val_lower = str_val.lower()
 
         if str_val_lower.endswith('k'):
@@ -139,41 +145,40 @@ class IntersectConfigLexer(object):
 
     # Handle errors
     def t_error(self, t):
+        """Handle lexer errors.
+
+        :param t: Token that caused the error.
+
+        :raises ValueError: Always raised for illegal characters.
         """
-        Handle lexer errors.
-
-        :param t: Token.
-
-        :raises ValueError: Always.
-        """
-
         raise ValueError(
             'Illegal character in input: "{}" at position {} ({})"'.format(
                 t.value[0],
                 t.lexpos,
-                '"{}{}"'.format(t.value[:20], '...' if len(t.value) > 20 else '') if len(t.value) > 5 else 'end of config string'
+                '"{}{}"'.format(
+                    t.value[:20], '...' if len(t.value) > 20 else ''
+                ) if len(t.value) > 5 else 'end of config string'
             )
         )
 
+
 class IntersectConfigParser(object):
-    """
-    Intersect configuration parser.
-    """
+    """Intersect configuration parser."""
     tokens: tuple[str]
-    lexer: ply.lex.lex
-    parser: ply.yacc.yacc
+    lexer: ply.lex.Lexer
+    parser: ply.yacc.LRParser
 
     tokens = IntersectConfigLexer.tokens
 
-    def __init__(self,
-        **kwdargs: Any
-    ):
-        """
-        Init parser.
+    def __init__(
+            self,
+            **kwdargs: Any
+    ) -> None:
+        """Initialize parser.
 
-        :param kwdargs: Passed to `ply.yacc.yacc`
+        Keyword arguments are passed to `ply.yacc.yacc`.
 
-        :raises Exception: If the ply parser throws an exception. May throw a range of exeception types.
+        :raises Exception: If the ply parser throws an exception. May throw a range of exception types.
         """
         if 'write_tables' not in kwdargs.keys():
             kwdargs['write_tables'] = False
@@ -184,18 +189,16 @@ class IntersectConfigParser(object):
         self.lexer = IntersectConfigLexer().lexer
         self.parser = ply.yacc.yacc(module=self, **kwdargs)
 
-    def p_merge_config(self, p):
+    def p_merge_config(self, p) -> None:
         """
         merge_config : KEYWORD ':' ':' spec_list
         """
-
         p[0] = {
             'strategy': p[1],
             'spec_list': p[4]
         }
 
-    # spec_list
-    def p_spec_list(self, p):
+    def p_spec_list(self, p) -> None:
         """
         spec_list : spec
                   | spec ':' spec_list
@@ -205,20 +208,20 @@ class IntersectConfigParser(object):
         else:
             p[0] = p[1] + p[3]
 
-    def p_spec(self, p):
+    def p_spec(self, p) -> None:
         """
         spec : KEYWORD
              | KEYWORD '(' val_list ')'
              | t_match
         """
-
-        is_match = \
-            len(p) == 2 and \
-            issubclass(p[1].__class__, list) and \
-            len(p[1]) > 0 and \
-            issubclass(p[1][0].__class__, tuple) and \
-            len(p[1][0])> 0 and \
+        is_match = (
+            len(p) == 2 and
+            issubclass(p[1].__class__, list) and
+            len(p[1]) > 0 and
+            issubclass(p[1][0].__class__, tuple) and
+            len(p[1][0]) > 0 and
             p[1][0][0] == 'match'
+        )
 
         if is_match:
             p[0] = [{
@@ -237,7 +240,7 @@ class IntersectConfigParser(object):
     # 1) type
     # 2) value (None if unlimited)
     # 3) key (if key=val, else None)
-    def p_val_primitive(self, p):
+    def p_val_primitive(self, p) -> None:
         """
         val_primitive : t_int
                       | t_float
@@ -248,52 +251,50 @@ class IntersectConfigParser(object):
         """
         p[0] = p[1]
 
-    def p_t_int(self, p):
+    def p_t_int(self, p) -> None:
         """
         t_int : T_INT
               | T_INT_MULT
         """
         p[0] = [('int', p[1], None)]
 
-    def p_t_float(self, p):
+    def p_t_float(self, p) -> None:
         """
         t_float : T_FLOAT
                 | T_FLOAT_EXP
         """
         p[0] = [('float', p[1], None)]
 
-    def p_t_unlimited(self, p):
+    def p_t_unlimited(self, p) -> None:
         """
         t_unlimited : T_UNLIMITED
         """
         p[0] = [('unlimited', None, None)]
 
-    def p_t_bool(self, p):
+    def p_t_bool(self, p) -> None:
         """
         t_bool : KW_TRUE
                | KW_FALSE
         """
-
         if p[1].lower() == 'true':
             p[0] = [('bool', True, None)]
         elif p[1].lower() == 'false':
             p[0] = [('bool', False, None)]
         else:
-            assert False, 'Parser bug: Expected "true" or "false", found %s' % p[1]
+            raise AssertionError('Parser bug: Expected "true" or "false", found %s' % p[1])
 
-    def p_t_primitive_list(self, p):
+    def p_t_primitive_list(self, p) -> None:
         """
         t_primitive_list : '[' primitive_list_elements ']'
         """
         p[0] = [('list', p[2], None)]
 
-    def p_primitive_list_elements(self, p):
+    def p_primitive_list_elements(self, p) -> None:
         """
         primitive_list_elements : primitive_list_element
                                 | primitive_list_element ',' primitive_list_elements
                                 | ',' primitive_list_elements
         """
-
         if len(p) == 2:
             p[0] = [p[1]]
         elif len(p) == 4:
@@ -301,23 +302,19 @@ class IntersectConfigParser(object):
         elif len(p) == 3:
             p[0] = p[2]
 
-    def p_primitive_list_element(self, p):
+    def p_primitive_list_element(self, p) -> None:
         """
         primitive_list_element : t_int
                                | t_float
         """
         p[0] = p[1][0]
 
-    #
-    # Values (keyed or primitive)
-    #
-    def p_val_list(self, p):
+    def p_val_list(self, p) -> None:
         """
         val_list : val
                  | val ',' val_list
                  | ',' val_list
         """
-
         if len(p) == 2:
             p[0] = p[1]
         elif len(p) == 4:
@@ -325,39 +322,34 @@ class IntersectConfigParser(object):
         else:
             p[0] = [None] + p[2]
 
-    # spec and spec_list
-    def p_val(self, p):
+    def p_val(self, p) -> None:
         """
         val : val_primitive
             | KEYWORD '=' val_primitive
             | KW_MATCH '=' val_primitive
         """
-
         if len(p) == 2:
             p[0] = p[1]
         elif len(p) == 4:
             p[0] = [(p[3][0][0], p[3][0][1], p[1])]
         else:
-            assert False, 'Parser bug: Expected 2 or 4 elements for "spec" rule, found %d' % len(p)
+            raise AssertionError('Parser bug: Expected 2 or 4 elements for "spec" rule, found %d' % len(p))
 
-    # match
-    def p_t_match(self, p):
+    def p_t_match(self, p) -> None:
         """
         t_match : KW_MATCH '(' val_list ')'
                 | KW_MATCH
         """
-
         if len(p) == 5:
             match_list = p[3]
         elif len(p) == 2:
             match_list = []
         else:
-            assert False, 'Parser bug: Expected 2 or 5 elements for "match" rule, found %d' % len(p)
+            raise AssertionError('Parser bug: Expected 2 or 5 elements for "match" rule, found %d' % len(p))
 
         p[0] = [('match', match_list, None)]
 
-    # Error handling
-    def p_error(self, p):
+    def p_error(self, p) -> None:  # noqa: D102
         self.parser.errtok = p
 
         if p is not None:
@@ -365,8 +357,13 @@ class IntersectConfigParser(object):
                 'Syntax error at position {} ("{}"): {}'.format(
                     p.lexpos,
                     p.value,
-                    '"' + (p.lexer.lexdata[p.lexpos:(p.lexpos + 20)] + '...' if len(p.lexer.lexdata) - p.lexpos > 20 else '') + '"'
-                        if len(p.lexer.lexdata) - p.lexpos > 5 else 'at end of input'
+                    '"' + (
+                        p.lexer.lexdata[p.lexpos:(p.lexpos + 20)] + '...'
+                        if len(p.lexer.lexdata) - p.lexpos > 20
+                        else ''
+                    ) + (
+                        '"' if len(p.lexer.lexdata) - p.lexpos > 5 else 'at end of input'
+                    )
                 )
             )
         else:
@@ -377,13 +374,11 @@ class IntersectConfigParser(object):
 
     # Parse
     def parse(self, *args, **kwdargs) -> dict:
-        """
-        Parse a configuration string.
+        """Parse a configuration string.
 
-        :param args: Arugments.
-        :param kwdargs: Keyword arguments.
+        Arguments are passed to the parser.
 
-        :return: AST as a dictionary.
+        :returns: AST as a dictionary.
 
         :raises Exception: If the ply parser or lexer throws an exception. Multiple exception types may be thrown.
         """

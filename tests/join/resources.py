@@ -14,7 +14,7 @@ from tests.assets.variant_tables.load import load_variant_table
 
 PARAMS_CROSS = [
     {
-        'svtype': ['ins', 'del'],
+        'vartype': ['ins', 'del'],
         'ro_min': [0.0, 0.2, 0.5, 0.9, 1.0],
         'offset_max': None,
         'size_ro_min': None,
@@ -24,7 +24,7 @@ PARAMS_CROSS = [
         'match_alt': None
     },
     {
-        'svtype': ['ins', 'del'],
+        'vartype': ['ins', 'del'],
         'ro_min': None,
         'offset_max': [None, 200, 1000],
         'size_ro_min': [None, 0.8],
@@ -34,7 +34,7 @@ PARAMS_CROSS = [
         'match_alt': None
     },
     {
-        'svtype': 'snv',
+        'vartype': 'snv',
         'ro_min': None,
         'offset_max': [None, 5, 200, 1000],
         'size_ro_min': None,
@@ -44,9 +44,10 @@ PARAMS_CROSS = [
         'match_alt': [None, True, False]
     }
 ]
+"""Parameters for test cases."""
 
 PARAM_KEYS = [
-    'svtype',
+    'vartype',
     'ro_min',
     'offset_max',
     'size_ro_min',
@@ -55,14 +56,13 @@ PARAM_KEYS = [
     'match_ref',
     'match_alt'
 ]
+"""Parameter keys."""
 
 PARAM_KEY_SPEC = ','.join(PARAM_KEYS)
+"""String representation of parameter keys."""
 
 def get_params():
-    """
-    Generate sets of parameters to test.
-    :return:
-    """
+    """Generate sets of parameters to test."""
 
     def set_param(value):
         if value is None or not isinstance(value, (list, tuple)):
@@ -81,6 +81,7 @@ def get_params():
             yield val_list
 
 PARAM_TUPLES = list(get_params())
+"""Parameter tuples."""
 
 JOIN_SCHEMA = {
     'index_a': pl.UInt32,
@@ -93,6 +94,7 @@ JOIN_SCHEMA = {
     'size_ro': pl.Float32,
     'match_prop': pl.Float32
 }
+"""Join table schema."""
 
 
 #
@@ -101,35 +103,33 @@ JOIN_SCHEMA = {
 
 @pytest.fixture(scope='class')
 def df_a(
-        svtype: str
+        vartype: str
 ) -> pl.DataFrame:
-    """
-    Get variant table A.
+    """Get variant table A.
 
-    :param svtype: SV type.
+    :param vartype: Variant type.
 
     :return: Variant table A.
     """
 
     return load_variant_table(
-        svtype, 'a'
+        vartype, 'a'
     )
 
 
 @pytest.fixture(scope='class')
 def df_b(
-        svtype: str
+        vartype: str
 ) -> pl.DataFrame:
-    """
-    Get variant table A.
+    """Get variant table B.
 
-    :param svtype: SV type.
+    :param vartype: Variant type.
 
-    :return: Variant table A.
+    :return: Variant table B.
     """
 
     return load_variant_table(
-        svtype, 'b'
+        vartype, 'b'
     )
 
 @pytest.fixture(scope='class')
@@ -144,11 +144,10 @@ def df_exp(
         match_ref: bool|None,
         match_alt: bool|None
 ):
-    """
-    Get a table of expected join records.
+    """Get a table of expected join records.
 
     :param df_exp_all: A table of all possible join records.
-    :param svtype: SV type.
+    :param vartype: Variant type.
     :param ro_min: Reciprocal overlap threshold.
     :param offset_max: Maximum offset.
     :param size_ro_min: Minimum size reciprocal overlap.
@@ -212,12 +211,11 @@ def df_join(
         match_ref: bool|None,
         match_alt: bool|None
 ) -> pl.DataFrame:
-    """
-    Get a table of joined records.
+    """Get a table of joined records.
 
     :param df_a: DataFrame A.
     :param df_b: DataFrame B.
-    :param svtype: SV type.
+    :param vartype: Variant type.
     :param ro_min: Reciprocal overlap threshold.
     :param offset_max: Maximum offset.
     :param size_ro_min: Minimum size reciprocal overlap.
@@ -231,7 +229,7 @@ def df_join(
 
     return agglovar.join.pair.join(
         **{
-            key: val for key, val in locals().items() if val is not None and key not in {'svtype'}
+            key: val for key, val in locals().items() if val is not None and key not in {'vartype'}
         }
 
         # ro_min=ro_min,
@@ -252,8 +250,7 @@ def subset_miss(
         df_join: pl.DataFrame,
         df_exp: pl.DataFrame
 ) -> pl.DataFrame:
-    """
-    Get expected records missing from df_join.
+    """Get expected records missing from df_join.
 
     :param df_join: Actual join.
     :param df_exp: Expected join.
@@ -277,8 +274,7 @@ def subset_extra(
         df_join: pl.DataFrame,
         df_exp: pl.DataFrame
 ) -> pl.DataFrame:
-    """
-    Get extraneous record in df_join that are not in df_exp.
+    """Get extraneous record in df_join that are not in df_exp.
 
     :param df_join: Actual join.
     :param df_exp: Expected join.
@@ -304,8 +300,7 @@ def row_to_dict(
         approx: bool=False,
         rel: float=1e-2
 ) -> dict[str, Any]:
-    """
-    Convert a row to a dictionary for assert comparisons between dictionaries.
+    """Convert a row to a dictionary for assert comparisons between dictionaries.
 
     :param df: DataFrame.
     :param index: Row index.
@@ -333,7 +328,8 @@ def make_expected_join_table(
         match_ref: bool|None,
         match_alt: bool|None
 ) -> pl.DataFrame:
-    """
+    """Construct expected join tables independently of the join function.
+
     :param df_a: DataFrame A.
     :param df_b: DataFrame B.
     :param match_ref: Match reference base.
@@ -346,19 +342,19 @@ def make_expected_join_table(
 
     row_list = list()
 
-    if 'svlen' not in df_a.columns:
+    if 'varlen' not in df_a.columns:
         df_a = (
             df_a
             .with_columns(
-                (pl.col('end') - pl.col('pos')).alias('svlen').cast(agglovar.schema.VARIANT['svlen'])
+                (pl.col('end') - pl.col('pos')).alias('varlen').cast(agglovar.schema.VARIANT['varlen'])
             )
         )
 
-    if 'svlen' not in df_b.columns:
+    if 'varlen' not in df_b.columns:
         df_b = (
             df_b
             .with_columns(
-                (pl.col('end') - pl.col('pos')).alias('svlen').cast(agglovar.schema.VARIANT['svlen'])
+                (pl.col('end') - pl.col('pos')).alias('varlen').cast(agglovar.schema.VARIANT['varlen'])
             )
         )
 
@@ -386,8 +382,8 @@ def make_expected_join_table(
                 'id_b': row_b['id'],
                 'ro': get_ro(row_a, row_b),
                 'offset_dist': (offset_dist := get_offset_dist(row_a, row_b)),
-                'offset_prop': offset_dist / np.min([row_a['svlen'], row_b['svlen']]),
-                'size_ro': np.min([row_a['svlen'], row_b['svlen']]) / np.max([row_a['svlen'], row_b['svlen']]),
+                'offset_prop': offset_dist / np.min([row_a['varlen'], row_b['varlen']]),
+                'size_ro': np.min([row_a['varlen'], row_b['varlen']]) / np.max([row_a['varlen'], row_b['varlen']]),
                 'match_prop': match_score_model.match_prop(row_a['seq'], row_b['seq']) if has_seq else None
             })
 
@@ -400,8 +396,7 @@ def get_ro(
         row_a: dict,
         row_b: dict
 ) -> float:
-    """
-    Compute expected reciprocal overlap. Assumes "chrom" was already checked.
+    """Compute expected reciprocal overlap. Assumes "chrom" was already checked.
 
     :param row_a: Row A.
     :param row_b: Row B.
@@ -412,9 +407,9 @@ def get_ro(
     pos_a = row_a['pos']
     pos_b = row_b['pos']
 
-    if row_a['svtype'] == 'INS':
-        end_a = row_a['pos'] + row_a['svlen']
-        end_b = row_b['pos'] + row_b['svlen']
+    if row_a['vartype'] == 'INS':
+        end_a = row_a['pos'] + row_a['varlen']
+        end_b = row_b['pos'] + row_b['varlen']
     else:
         end_a = row_a['end']
         end_b = row_b['end']
@@ -424,14 +419,13 @@ def get_ro(
 
     return (
         np.min([end_a, end_b]) - np.max([pos_a, pos_b])
-    ) / np.max([row_a['svlen'], row_b['svlen']])
+    ) / np.max([row_a['varlen'], row_b['varlen']])
 
 def get_offset_dist(
         row_a: dict,
         row_b: dict
 ) -> int:
-    """
-    Compute expected offset distance. Assumes "chrom" was already checked.
+    """Compute expected offset distance. Assumes "chrom" was already checked.
 
     :param row_a: Row A.
     :param row_b: Row B.

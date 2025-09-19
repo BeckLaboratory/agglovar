@@ -1,4 +1,4 @@
-﻿table_name,chrom,pos,end,id,svtype,ref,alt,comment
+﻿table_name,chrom,pos,end,id,vartype,ref,alt,comment
 a,chr1,100,101,chr1-101-CG,SNV,c,g,
 a,chr1,120,121,chr1-121-CG,SNV,C,g,
 a,chr1,200,201,chr1-201-GC,SNV,g,c,

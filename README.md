@@ -5,12 +5,17 @@ callsets. It defines a standard schema for genomic variants based on Apache Arro
 possible, Aggolvar uses Parquet files to store data allowing it to preserve the schema and take advantage of both
 columnar storage and pushdown optimizations for fast queries and transformations.
 
-Agglovar is designed to replace the SV-Pop library (https://github.com/EichlerLab/svpop).
+Agglovar replaces variant intersections in the SV-Pop library (https://github.com/EichlerLab/svpop).
 
 The name Agglovar is a portmanteau of the latin word "agglomerare" (to gather) and "variant" (genomic variants).
 
 ## Alpha release
 
-The "a" in the version number indicates that Agglovar is an alpha version and is still under active development.
+Agglovar is under active development and a stable release is not yet available.
 
-The first full release will be version 1.0.0.
+
+## Installation
+
+```
+pip install agglovar
+```
