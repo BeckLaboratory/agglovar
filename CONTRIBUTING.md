@@ -84,6 +84,13 @@ A list of environments can be viewed in [tox.toml]. Environments starting with "
 Python versions, and a "flake8" environment is for linting. By default, running a tox environment will run all unit
 tests or perform linting for the whole project.
 
+Important environments are:
+* py312: Run unit tests on Python 3.12.
+* py313: Run unit tests on Python 3.13.
+* flake8: Linting.
+* sphinx: Build documentation.
+
+
 To run a tox environment, use:
 ```bash
 uv run tox -e <environment_name>
@@ -127,11 +134,13 @@ If you are stuck or unsure about your solution, feel free to open a draft pull r
 
 ## Conventions
 
-* Use [Google docstrings](http://google.github.io/styleguide/pyguide.html#s3.8-comments-and-docstrings).
+* Use [reStructuredText docstrigns](https://sphinx-rtd-tutorial.readthedocs.io/en/latest/docstrings.html)
+  * Omit ":type:" and ":rtype:", allow type hints to fill it in.
 * Use type hints.
 * Use snake_case for variable names and function names.
 * Use CamelCase for class names.
-* Line length limit 120 characters (will likely be reduced to 99 in the future for better PEP 8 compliance).
+* Line length limit 99 characters
+  * The project is currently transitioning from 120, and there is a mix of both.
 * Use 4 spaces for indentation.
 * Place operators at the start of multi-line expressions rather than the end.
 * Avoid backslashes, enclose in parethesis instead.

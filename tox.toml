@@ -1,6 +1,5 @@
 requires = ["tox>=4"]
-env_list = ["py312", "py313", "flake8"]
-
+env_list = ["py312", "py313", "flake8", "sphinx"]
 
 [env.py312]
 description = "Run unit tests"
