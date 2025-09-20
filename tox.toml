@@ -55,3 +55,20 @@ commands = [
 #    ["sphinx-build", "-n", "-W", "--keep-going", "-b", "html", "docs/source", "docs/build/"],
 ]
 allowlist_externals = ["make"]
+
+
+[env.testpypi]
+deps = [
+    "twine>=6.2.0",
+]
+commands = [
+    ["python3", "-m", "twine", "upload", "--skip-existing", "--repository", "testpypi", "dist/*.whl", "dist/*.tar.gz", "{posargs:--}"],
+]
+
+[env.pypi]
+deps = [
+    "twine>=6.2.0",
+]
+commands = [
+    ["python3", "-m", "twine", "upload", "--skip-existing", "--repository", "pypi", "dist/*.whl", "dist/*.tar.gz", "{posargs:--}"],
+]

@@ -39,7 +39,6 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
-    "Private :: Do Not Upload",  # Temporary until published
 ]
 
 authors = [
