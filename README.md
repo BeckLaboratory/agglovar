@@ -13,9 +13,14 @@ The name Agglovar is a portmanteau of the latin word "agglomerare" (to gather) a
 
 Agglovar is under active development and a stable release is not yet available.
 
+## Documentation
+
+Documentation for Agglovar can be found at:
+https://agglovar.readthedocs.io/en/latest
 
 ## Installation
 
 ```
 pip install agglovar
 ```
+

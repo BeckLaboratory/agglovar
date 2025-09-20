@@ -20,7 +20,7 @@ dependencies = [
 
 [agglovar.urls]
 Homepage = "https://github.com/BeckLaboratory/agglovar"
-#Documentation = "https://agglovar.readthedocs.io"
+Documentation = "https://agglovar.readthedocs.io/en/latest"
 Repository = "https://github.com/BeckLaboratory/agglovar"
 Issues = "https://github.com/BeckLaboratory/agglovar/issues"
 Changelog = "https://github.com/BeckLaboratory/agglovar/blob/master/CHANGELOG.md"
