@@ -12,7 +12,3 @@ wheels/
 
 # Docs
 docs/build
-
-# Other
-**/__pycache__
-

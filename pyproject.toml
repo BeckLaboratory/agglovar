@@ -102,8 +102,8 @@ max-line-length = 120
 
 [tool.flake8]
 max-line-length = 120
-docstring-convention = "google"
+docstring-convention = "pep257"
 per-file-ignores = [
     "src/agglovar/join/config/parser.py: D200, D205, D212, D300, D403, D415"
 ]
-rst-roles = ["class", "meth", "const", "ref", "func"]
+rst-roles = ["class", "meth", "const", "ref", "func", "mod"]

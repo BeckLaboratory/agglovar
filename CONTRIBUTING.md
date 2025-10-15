@@ -134,7 +134,7 @@ If you are stuck or unsure about your solution, feel free to open a draft pull r
 
 ## Conventions
 
-* Use [reStructuredText docstrigns](https://sphinx-rtd-tutorial.readthedocs.io/en/latest/docstrings.html)
+* Use [reStructuredText docstrings](https://sphinx-rtd-tutorial.readthedocs.io/en/latest/docstrings.html)
   * Omit ":type:" and ":rtype:", allow type hints to fill it in.
 * Use type hints.
 * Use snake_case for variable names and function names.
