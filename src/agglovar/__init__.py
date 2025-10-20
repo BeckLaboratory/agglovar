@@ -5,17 +5,21 @@ __version__ = '0.0.1.dev2'
 __all__ = [
     'align',
     'fa',
-    'join',
+    'pairwise',
     'io',
     'kmer',
+    'merge',
+    'meta',
     'schema',
     'seqmatch',
 ]
 
 from . import align
 from . import fa
-from . import join
+from . import pairwise
 from . import io
 from . import kmer
+from . import merge
+from . import meta
 from . import schema
 from . import seqmatch

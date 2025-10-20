@@ -1,11 +1,8 @@
-"""Generate pairwise intersects between two variant tables.
+"""Generate pairwise overlaps between two variant tables.
 
 For a pair of variant tables (A and B), find all pairs of variants between A and B that meet a set
-of intersect parameters. Each pair of variants appears at most once, and a distinct variant in
+of overlap parameters. Each pair of variants appears at most once, and a distinct variant in
 either table may have multiple matches.
-
-These pairwise joins form the basis of more complex intersect use cases involving multiple
-strategies and callsets.
 
 The join is extremely flexible and customizable. A default set of parameters should be adequate
 for almost all tasks, and each stage of the join algorithm can be customized for more complex
@@ -24,6 +21,21 @@ conforming to schema :const:`agglovar.schema.VARIANT`.
     performance if records for each chromosome are grouped and sorted. If numeric chromosome names
     are sorted numerically (not default or advised), the join is not impacted, although the join
     table will be ordered by chromosome lexicographically (i.e. "1" < "10" < "2"...).
+
+.. Warning::
+   Input tables are processed lazily, but must collect results periodically to avoid memory
+   exhaustion. If lazy tables have been transformed since they were read into memory, those
+   transformations will be repeated with each processed chunk. Consider collecting results
+   if they fit into memory, and if not, write/sink to a temporary parquet file and join the
+   re-scanned temporary files.
+
+.. Note::
+   For best performance, read sorted input lazily (i.e. "scan_parquet()") or join tables in memory
+   if they are small enough (i.e. "collected" tables). Pushdown operations on parquet files will
+   avoid re-reading while files, and only required columns will be extracted. When reading from
+   non-parquet files, read tables into memory and join them. Joining unsorted tables or tables
+   scanned from non-parquet files will work, but will incur a significant performance penalty on
+   large tables.
 
 .. Note::
    No assumptions are made about the order of columns, they are referenced strictly by name. While
@@ -47,14 +59,14 @@ be read with ``polars.scan_parquet()`` and joined efficiently.
 
 .. Note::
    An input variant table can be checked for errors by calling
-   :meth:`PairwiseIntersect.prepare_tables()` and catching :class:`ValueError`. To check a single
+   :meth:`PairwiseOverlap.prepare_tables()` and catching :class:`ValueError`. To check a single
    table, call this method with ``df_a`` and ``df_b`` set to the same object.
 
 
 Output join tables
 ==================
 
-The resulting join table describes each pairwise intersect, but does not contain whole variant
+The resulting join table describes each pairwise overlaps, but does not contain whole variant
 records. Columns referring to a distinct input table have suffix "_a" or "_b" (e.g. "index_a" is
 the row index in ``df_a``).
 
@@ -67,9 +79,9 @@ Join columns:
     #. index_b: Row index in df_b
     #. id_a: Variant ID in df_a.
     #. id_b: Variant ID in df_b.
-    #. ro: Reciprocal overlap if variants intersect (0.0 if no overlap).
+    #. ro: Reciprocal overlap if variants overlap (0.0 if no overlap).
     #. size_ro: Size reciprocal overlap (maximum RO if variants were shifted to maximally
-       intersect).
+       overlap).
     #. offset_dist: The maximum of the start position distance and end position distance.
     #. offset_prop: Offset / variant length. Variant length is the minimum length of the two
        variants in the record.
@@ -92,7 +104,7 @@ details.
 Join parameters
 ===============
 
-A set of join parameters are defined in the :class:`PairwiseIntersect` class. These parameters
+A set of join parameters are defined in the :class:`PairwiseOverlap` class. These parameters
 should cover most joins, although they can be replaced or augmented with custom expressions
 (see :ref:`agglovar_join_pair_customizing` below for details).
 
@@ -111,8 +123,8 @@ match, and "1.0" forces the start position and variant size to match exactly.
 
 While this can be computed using "pos" and "end" for most variant types, the end position is
 defined as ``pos + varlen`` to support insertions. Setting ``force_end_ro`` to `True` in
-:class:`PairwiseIntersect` will force the existing end position to be used, but it will break
-insertion intersects. Unless "pos + varlen != end" for some valid reason, ``force_end_ro`` should
+:class:`PairwiseOverlap` will force the existing end position to be used, but it will break
+insertion overlaps. Unless "pos + varlen != end" for some valid reason, ``force_end_ro`` should
 never be used.
 
 Size reciprocal overlap (size_ro_min)
@@ -120,7 +132,7 @@ Size reciprocal overlap (size_ro_min)
 
 **size_ro_min**: Minimum size-RO. Size-RO is defined as the minimum "varlen" divided by the maximum
 "varlen" of two variants. Size-RO is similar to RO if one variant was shifted to maximally
-intersect the other (i.e. shift to the same start position). It does not reqire that the variant
+overlap the other (i.e. shift to the same start position). It does not reqire that the variant
 overlap in reference space.
 
 .. Warning::
@@ -174,14 +186,14 @@ Minimum sequence match proportion (match_prop_min)
 
 **match_prop_min**: Minimum sequence match proportion.
 
-When variant intersects use only size and position, it is difficult to control false-positive
+When variant overlaps use only size and position, it is difficult to control false-positive
 and false-negative matches while permitting normal genetic variation. Setting `match_prop_min` will
 force a match threshold based on variant sequence similarity. Using permissive parameters on size
 and position to reduce false negatives with a strict match proportion to reduce false positives is
 one powerful join strategy.
 
 Match proportion uses an alignment scores between two variant sequences. A score model
-(``match_score_model`` parameter of :class:`PairwiseIntersect`) defines how to score alignments
+(``match_score_model`` parameter of :class:`PairwiseOverlap`) defines how to score alignments
 based on matches, mismatches, and gaps. The match proportion is defined as the alignment score
 between two sequence divided by the maximum alignment score that could be obtained if every base
 matched.
@@ -302,35 +314,35 @@ Most join operations can be defined simply by setting parameters (see
 :ref:`agglovar_join_pair_parameters`).
 
 Join filters operate on the join columns and provide further filtering. These expressions are set
-by the join parameters passed to the :class:`PairwiseIntersect` constructor. Additional expressions
+by the join parameters passed to the :class:`PairwiseOverlap` constructor. Additional expressions
 can also be added. These may affect join predicates, columns, or filters.
 
 This is a powerful feature, and it should be used with caution. Use join parameters whenever
 possible, and augment them with additional expressions only when necessary. It is possible to
 use both, and the join parameters will come first.
 
-When a :class:`PairwiseIntersect` instance is created, additional expressions can be added to it
-until either :meth:`PairwiseIntersect.lock` is called or a join is performed (which locks the
+When a :class:`PairwiseOverlap` instance is created, additional expressions can be added to it
+until either :meth:`PairwiseOverlap.lock` is called or a join is performed (which locks the
 object from further modifications).
 
 Three methods can insert expressions:
 
-* :meth:`PairwiseIntersect.append_join_predicates`
-* :meth:`PairwiseIntersect.append_join_cols`
-* :meth:`PairwiseIntersect.append_join_filters`
+* :meth:`PairwiseOverlap.append_join_predicates`
+* :meth:`PairwiseOverlap.append_join_cols`
+* :meth:`PairwiseOverlap.append_join_filters`
 
 Each of these takes a single expression or an iterable object of expressions. Note that the
 output join table columns are affected by appended columns. This can be used to add additional
 statistics to the output table or to retain columns from the original tables (consider joining
 the output table with the original tables to retrieve columns in this case).
 
-Expected columns (:const:`PairwiseIntersect.expected_cols`) is updated automatically with each new
+Expected columns (:const:`PairwiseOverlap.expected_cols`) is updated automatically with each new
 expression and cannot be modified directly.
 
 Join Class Inspection
 =====================
 
-A :class:`PairwiseIntersect` instance has properties for inspecting the join process. These
+A :class:`PairwiseOverlap` instance has properties for inspecting the join process. These
 properties are set by join parameters and customized expressions.
 
 Join inspection properties:
@@ -339,8 +351,8 @@ Join inspection properties:
     * ``join_filters``: A list of filter expressions.
     * ``expected_cols``: A list of column names expected in ``df_a`` and ``df_b``.
 
-The values in :meth:`PairwiseIntersect.expected_cols` are automatically derived from expressions in
-:meth:`PairwiseIntersect.join_predicates` and :meth:`PairwiseIntersect.join_cols`. These columns
+The values in :meth:`PairwiseOverlap.expected_cols` are automatically derived from expressions in
+:meth:`PairwiseOverlap.join_predicates` and :meth:`PairwiseOverlap.join_cols`. These columns
 must be either present in ``df_a`` and ``df_b``, or they must be auto-generated columns
 (see :const:`AUTOGEN_COLS`).
 
@@ -354,22 +366,25 @@ __all__ = [
     'RESERVED_COLS',
     'AUTOGEN_COLS',
     'DEFAULT_CHUNK_SIZE',
-    'PairwiseIntersect',
+    'PairwiseOverlap',
     'chunk_index',
     'join_iter',
     'join',
 ]
 
-
-from dataclasses import dataclass
-from dataclasses import field
-from typing import Iterable, Generator, Optional
+from collections.abc import Iterable, Iterator
+from typing import Optional
 from warnings import warn
 
 import polars as pl
 
-from .. import seqmatch
 from .. import schema
+from ..meta.decorators import immutable
+from ..meta.descriptors import BoundedFloat, CheckedBool, BoundedInt
+from ..seqmatch import MatchScoreModel
+
+from .base import PairwiseJoin
+from .weights import WeightStrategy, DEFAULT_WEIGHT_STRATEGY
 
 RESERVED_COLS: frozenset[str] = frozenset({
     '_index',
@@ -383,21 +398,21 @@ AUTOGEN_COLS: frozenset[str] = frozenset({
 })
 """Columns automatically generated by the join process for input tables if they are not present."""
 
+MIN_CHUNK_SIZE: int = 100
+"""Minimum chunk size."""
 
 DEFAULT_CHUNK_SIZE: int = 10_000
 """
 Default size to chunk tables before joining. A value of 10,000 works well to balance combinatorial
-explosion without exploding the number of chunks to merge when intersecting large variant tables.
+explosion without exploding the number of chunks to merge when overlapping large variant tables.
 """
 
 
-#
-# Intersect class definition
-#
+@immutable
+class PairwiseOverlap(PairwiseJoin):
+    """Pairwise overlap class.
 
-@dataclass(frozen=True)
-class PairwiseIntersect:
-    """Pairwise intersect class.
+    Join by overlapping variants by position.
 
     :ivar ro_min: Minimum reciprocal overlap for allowed matches. If 0.0, then any overlap matches.
     :ivar size_ro_min: Reciprocal length proportion of allowed matches. If `match_prop_min` is set
@@ -417,55 +432,71 @@ class PairwiseIntersect:
         end position in the DataFrame is also used for reciprocal overlap without changes.
         Typically, this option should not be used and will break reciprocal overlap for insertions.
     :ivar chunk_size: (Advanced) Chunk df_a into partitions of this size, and for each chunk,
-        subset df_b to include only variants that may intersect with variants in the chunk. If
+        subset df_b to include only variants that may overlap with variants in the chunk. If
         None, each chromosome is a single chunk, which will lead to a combinatorial explosion
         unless offset_max is greater than 0.
-    :ivar match_seq: (Internal state) True if sequence matching is performed (i.e. match_prop_min
-        is not None).
-    :ivar is_locked: (Internal state) True if this object is locked and cannot be modified.
     """
 
     # Join parameters
-    ro_min: float = field(default=None)
-    size_ro_min: float = field(default=None)
-    offset_max: int = field(default=None)
-    offset_prop_max: float = field(default=None)
-    match_ref: bool = field(default=False)
-    match_alt: bool = field(default=False)
-    match_prop_min: float = field(default=None)
+    ro_min: Optional[float] = BoundedFloat(min_val=0.0, max_val=1.0)
+    size_ro_min: Optional[float] = BoundedFloat(min_val=(0.0, False), max_val=1.0)
+    offset_max: Optional[int] = BoundedInt(0)
+    offset_prop_max: Optional[float] = BoundedFloat(0.0)
+    match_ref: bool = CheckedBool()
+    match_alt: bool = CheckedBool()
+    match_prop_min: Optional[float]
 
     # Advanced Configuration Attributes
-    match_score_model: seqmatch.MatchScoreModel = field(default=None)
-    force_end_ro: bool = field(default=False)
-    chunk_size: int = field(default=DEFAULT_CHUNK_SIZE)
+    match_score_model: MatchScoreModel
+    force_end_ro: bool = CheckedBool()
+    chunk_size: int = BoundedInt(MIN_CHUNK_SIZE, default=DEFAULT_CHUNK_SIZE)
 
     # Table and Join Control
-    _join_predicates: list[pl.Expr] = field(
-        default_factory=list, init=False, repr=False
-    )
-    _join_filters: list[pl.Expr] = field(
-        default_factory=list, init=False, repr=False
-    )
-    _join_cols: list[pl.Expr] = field(
-        default_factory=list, init=False, repr=False
-    )
+    _join_predicates: list[pl.Expr]
+    _join_filters: list[pl.Expr]
+    _join_cols: list[pl.Expr]
 
-    # Class Internal Attributes
-    match_seq: bool = field(default=False, init=False, repr=False)
-    is_locked: bool = field(default=False, init=False, repr=False)
-    _expected_cols: set[str] = field(
-        default_factory=lambda: {'chrom', 'pos', 'end'}, init=False, repr=False
-    )
-    _chunk_range: dict[tuple[str, str], list[pl.Expr]] = field(
-        default_factory=dict, init=False, repr=False
-    )
+    _expected_cols: set[str]
+    _chunk_range: dict[tuple[str, str], list[pl.Expr]]
 
-    def __post_init__(self) -> None:
-        """Post-initialization checks."""
-        #
-        # Join Table Expressions
-        #
+    def __init__(
+            self,
+            ro_min: Optional[float] = None,
+            size_ro_min: Optional[float] = None,
+            offset_max: Optional[int] = None,
+            offset_prop_max: Optional[float] = None,
+            match_ref: bool = False,
+            match_alt: bool = False,
+            match_prop_min: Optional[float] = None,
+            match_score_model: Optional[MatchScoreModel] = None,
+            force_end_ro: bool = False,
+            weight_strategy: WeightStrategy = DEFAULT_WEIGHT_STRATEGY,
+            chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> None:
+        super().__init__(weight_strategy)
 
+        # Set parameters
+        self.ro_min = ro_min
+        self.size_ro_min = size_ro_min
+        self.offset_max = offset_max
+        self.offset_prop_max = offset_prop_max
+        self.match_ref = match_ref
+        self.match_alt = match_alt
+        self.match_prop_min = match_prop_min
+        self.match_score_model = match_score_model
+        self.force_end_ro = force_end_ro
+        self.chunk_size = chunk_size
+
+        # Set internal attributes and containers
+        self._join_predicates = []
+        self._join_filters = []
+        self._join_cols = []
+
+        self._expected_cols = {'chrom', 'pos', 'end'}
+        self._chunk_range = dict()
+
+
+        # Reusable join-table expressions
         expr_overlap_ro = (
             (
                 (
@@ -521,22 +552,8 @@ class PairwiseIntersect:
             pl.lit(None).cast(pl.Float32)
         )
 
-        #
-        # Configuration Attributes
-        #
-
-        # Check: ro_min
+        # Set ranges and expressions from parameters
         if self.ro_min is not None:
-            try:
-                object.__setattr__(self, 'ro_min', float(self.ro_min))
-            except ValueError as e:
-                raise ValueError(f'Reciprocal-overlap parameter (ro_min) is not a number: {self.ro_min}') from e
-
-            if not 0.0 <= self.ro_min <= 1.0:
-                raise ValueError(
-                    f'Reciprocal-overlap parameter (ro_min) must be between 0.0 and 1.0 (inclusive): {self.ro_min}'
-                )
-
             self.append_join_predicates(
                 expr_overlap_ro >= self.ro_min
             )
@@ -548,21 +565,7 @@ class PairwiseIntersect:
             self._append_chunk_range('pos', 'max', pl.col('_end_ro_a'))
             self._append_chunk_range('_end_ro', 'min', pl.col('pos_a'))
 
-        # Check: size_ro_min
         if self.size_ro_min is not None:
-            try:
-                object.__setattr__(self, 'size_ro_min', float(self.size_ro_min))
-            except ValueError as e:
-                raise ValueError(
-                    f'Size-reciprocal-overlap parameter (size_ro_min) is not a number: {self.size_ro_min}'
-                ) from e
-
-            if not 0.0 < self.size_ro_min <= 1.0:
-                raise ValueError(
-                    f'Size-reciprocal-overlap parameter (size_ro_min) must be between '
-                    f'0.0 (exclusive) and 1.0 (inclusive): {self.size_ro_min}'
-                )
-
             self.append_join_predicates(
                 expr_szro >= self.size_ro_min
             )
@@ -570,16 +573,7 @@ class PairwiseIntersect:
             self._append_chunk_range('varlen', 'min', pl.col('varlen_a') * self.size_ro_min)
             self._append_chunk_range('varlen', 'max', pl.col('varlen_a') * (1 / self.size_ro_min))
 
-        # Check: offset_max
         if self.offset_max is not None:
-            try:
-                object.__setattr__(self, 'offset_max', int(self.offset_max))
-            except ValueError as e:
-                raise ValueError(f'Offset-max parameter (offset_max) is not an integer: {self.offset_max}') from e
-
-            if self.offset_max < 0:
-                raise ValueError(f'Offset-max parameter (offset_max) must not be negative: {self.offset_max}')
-
             if self.offset_max == 0:
                 self.append_join_predicates([  # Very fast joins on equality
                     pl.col('pos_a') == pl.col('pos_b'),
@@ -593,20 +587,7 @@ class PairwiseIntersect:
             self._append_chunk_range('pos', 'min', pl.col('pos_a') - self.offset_max)
             self._append_chunk_range('end', 'max', pl.col('end_a') + self.offset_max)
 
-        # Check: offset_prop_max
         if self.offset_prop_max is not None:
-            try:
-                object.__setattr__(self, 'offset_prop_max', float(self.offset_prop_max))
-            except ValueError as e:
-                raise ValueError(
-                    f'Size-offset-max parameter (offset_prop_max) is not a number: {self.offset_prop_max}'
-                ) from e
-
-            if self.offset_prop_max < 0.0:
-                raise ValueError(
-                    f'Size-offset-max parameter (offset_prop_max) must not be negative: {self.offset_prop_max}'
-                )
-
             self.append_join_predicates(
                 expr_offset_prop <= self.offset_prop_max
             )
@@ -614,78 +595,33 @@ class PairwiseIntersect:
             self._append_chunk_range('pos', 'min', pl.col('pos_a') - pl.col('varlen_a') * self.offset_prop_max)
             self._append_chunk_range('end', 'max', pl.col('end_a') + pl.col('varlen_a') * self.offset_prop_max)
 
-        # Check: match_ref
-        if not isinstance(self.match_ref, bool):
-            raise ValueError(f'Match reference allele (match_ref) must be a boolean: {type(self.match_ref)}')
-
         if self.match_ref:
             self.append_join_predicates(
                 pl.col('ref_a') == pl.col('ref_b')
             )
-
-        # Check: match_alt
-        if not isinstance(self.match_alt, bool):
-            raise ValueError(f'Match alternate allele (match_alt) must be a boolean: {type(self.match_alt)}')
 
         if self.match_alt:
             self.append_join_predicates(
                 pl.col('alt_a') == pl.col('alt_b')
             )
 
-        # Check: match_prop_min
-        if self.match_prop_min is not None:
-            try:
-                object.__setattr__(self, 'match_prop_min', float(self.match_prop_min))
-            except ValueError as e:
-                raise ValueError(
-                    f'Alignment proportion (match_prop_min) must be a number: ({type(self.match_prop_min)})'
-                ) from e
-
-            if not 0.0 <= self.match_prop_min <= 1.0:
-                raise ValueError(
-                    f'Alignment proportion (match_prop_min) must be between 0.0 and 1.0 (inclusive): '
-                    f'{self.match_prop_min}'
-                )
-
-            if self.match_prop_min > 0.0:
-                self.append_join_filters(
-                    pl.col('match_prop') >= self.match_prop_min
-                )
+        if self.match_prop_min is not None and self.match_prop_min > 0.0:
+            self.append_join_filters(
+                pl.col('match_prop') >= self.match_prop_min
+            )
 
         #
         # Advanced Configuration Attributes
         #
 
-        # Check: match_score_model
-        if self.match_prop_min is not None:
-            if self.match_score_model is None:
-                object.__setattr__(self, 'match_score_model', seqmatch.MatchScoreModel())
-            else:
-                if not isinstance(self.match_score_model, seqmatch.MatchScoreModel):
-                    raise ValueError(
-                        f'Alignment model (match_score_model) must be a seqmatch.MatchScoreModel: '
-                        f'{type(self.match_score_model)}'
-                    )
+        if self.match_score_model is None:
+            self.match_score_model = MatchScoreModel()
 
-        # Check: force_end_ro
-        if not isinstance(self.force_end_ro, bool):
-            raise ValueError(f'Force end overlap (force_end_ro) must be a boolean: {type(self.force_end_ro)}')
-
-        # Check: chunk_size
-        try:
-            object.__setattr__(self, 'chunk_size', int(self.chunk_size))
-        except ValueError as e:
-            raise ValueError(f'Chunk size (chunk_size) is not an integer: {self.chunk_size}') from e
-
-        if self.chunk_size < 0:
-            raise ValueError(f'Chunk size (chunk_size) must not be negative: {self.chunk_size}')
-
-        #
-        # Class Internal Attributes
-        #
-
-        if self.match_prop_min is not None:
-            object.__setattr__(self, 'match_seq', True)
+        elif not isinstance(self.match_score_model, MatchScoreModel):
+            raise ValueError(
+                f'Alignment model (match_score_model) must be a seqmatch.MatchScoreModel: '
+                f'{type(self.match_score_model)}'
+            )
 
         # Set join columns
         self.append_join_cols([
@@ -699,18 +635,6 @@ class PairwiseIntersect:
             expr_szro.alias('size_ro'),
             expr_match_prop.alias('match_prop')
         ])
-
-    def lock(self) -> None:
-        """Locks the join configuration to prevent changes."""
-        # join_predicates and join_filters may be empty, and will crash the join if they are. Ensure they are not empty.
-        if len(self._join_predicates) == 0:
-            self.append_join_predicates(pl.lit(True))
-
-        if len(self._join_filters) == 0:
-            self.append_join_filters(pl.lit(True))
-
-        # Lock the object
-        object.__setattr__(self, 'is_locked', True)
 
     @property
     def join_predicates(self) -> list[pl.Expr]:
@@ -737,14 +661,19 @@ class PairwiseIntersect:
         return self._join_cols.copy()
 
     @property
-    def expected_cols(self) -> set[str]:
-        """A list of columns expected to be found in df_a and df_b without "_a" or "_b" suffixes.
+    def required_cols(self) -> set[str]:
+        """The minimum set of columns that must be present in input tables.
 
         This is set based on parameters needed to perform the join. For example, if sequence
         matching is required, then "seq" will be in this list, and if "seq" does not exist
         in both df_a and df_b, then an error is raised.
         """
-        return self._expected_cols.copy()
+        return set(self._expected_cols - AUTOGEN_COLS - RESERVED_COLS)
+
+    @property
+    def reserved_cols(self) -> set[str]:
+        """A set of columns that are reserved for internal use and must not be present in input tables."""
+        return set(RESERVED_COLS)
 
     @property
     def chunk_range(self) -> dict[tuple[str, str], list[pl.Expr]]:
@@ -789,7 +718,7 @@ class PairwiseIntersect:
         :param expr: An expression or list of expressions.
         """
         if self.is_locked:
-            raise AttributeError('Pairwise intersect object is locked and cannot be modified.')
+            raise AttributeError('Pairwise join object is locked and cannot be modified.')
 
         if isinstance(expr, pl.Expr):
             expr = [expr]
@@ -812,7 +741,7 @@ class PairwiseIntersect:
         :param expr: An expression or list of expressions.
         """
         if self.is_locked:
-            raise AttributeError('Pairwise intersect object is locked and cannot be modified.')
+            raise AttributeError('Pairwise join object is locked and cannot be modified.')
 
         if isinstance(expr, pl.Expr):
             expr = [expr]
@@ -837,7 +766,7 @@ class PairwiseIntersect:
         :param expr: Expression or list of expressions.
         """
         if self.is_locked:
-            raise AttributeError('Pairwise intersect object is locked and cannot be modified.')
+            raise AttributeError('Pairwise join object is locked and cannot be modified.')
 
         if isinstance(expr, pl.Expr):
             expr = [expr]
@@ -900,7 +829,7 @@ class PairwiseIntersect:
             self,
             df_a: pl.DataFrame | pl.LazyFrame,
             df_b: pl.DataFrame | pl.LazyFrame
-    ) -> Generator[pl.LazyFrame, None, None]:
+    ) -> Iterator[pl.LazyFrame]:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
         :param df_a: Source dataframe.
@@ -922,13 +851,13 @@ class PairwiseIntersect:
                 df_a.head(0)
                 .join_where(
                     df_b.head(0),
-                    *self._join_predicates
+                    *(self._join_predicates if self._join_predicates else [pl.lit(True)])
                 )
                 .select(
                     *self._join_cols
                 )
                 .filter(
-                    *self._join_filters
+                    *(self._join_filters if self._join_filters else [pl.lit(True)])
                 )
                 .sort(
                     ['index_a', 'index_b']
@@ -962,36 +891,21 @@ class PairwiseIntersect:
                     df_a_chunk
                     .join_where(
                         df_b_chunk,
-                        *self._join_predicates
+                        *(self._join_predicates if self._join_predicates else [pl.lit(True)])
                     )
                     .select(
                         *self._join_cols
                     )
                     .filter(
-                        *self._join_filters
+                        *(self._join_filters if self._join_filters else [pl.lit(True)])
+                    )
+                    .with_columns(
+                        self.weight_strategy.expr.alias('weight')
                     )
                     .sort(
                         ['index_a', 'index_b']
                     )
                 )
-
-    def join(
-            self,
-            df_a: pl.DataFrame | pl.LazyFrame,
-            df_b: pl.DataFrame | pl.LazyFrame
-    ) -> pl.LazyFrame:
-        """Find all pairs of variants in two sources that meet a set of criteria.
-
-        This is a convenience function that calls join_iter() and concatenates the results.
-
-        :param df_a: Table A.
-        :param df_b: Table B.
-
-        :returns: A join table.
-        """
-        return pl.concat(
-            self.join_iter(df_a, df_b)
-        )
 
     def prepare_tables(
             self,
@@ -1029,8 +943,8 @@ class PairwiseIntersect:
         columns_a = set(df_a.collect_schema().names())
         columns_b = set(df_b.collect_schema().names())
 
-        missing_cols_a = sorted((self._expected_cols - columns_a) - AUTOGEN_COLS - RESERVED_COLS)
-        missing_cols_b = sorted((self._expected_cols - columns_b) - AUTOGEN_COLS - RESERVED_COLS)
+        missing_cols_a = sorted(self.check_required_cols(columns_a))
+        missing_cols_b = sorted(self.check_required_cols(columns_b))
 
         if missing_cols_a or missing_cols_b:
             if missing_cols_a == missing_cols_b:
@@ -1042,7 +956,7 @@ class PairwiseIntersect:
             )
 
         # Drop reserved columns
-        if reserved_cols := sorted(RESERVED_COLS & columns_a):
+        if reserved_cols := sorted(self.check_reserved_cols(columns_a)):
             err_str = f'Reserved columns in table "A": {", ".join(reserved_cols)}'
 
             if warn_on_reserved:
@@ -1050,9 +964,9 @@ class PairwiseIntersect:
             else:
                 raise ValueError(err_str)
 
-            df_a = df_a.drop(RESERVED_COLS, strict=False)
+            df_a = df_a.drop(reserved_cols, strict=False)
 
-        if reserved_cols := sorted(RESERVED_COLS & columns_b):
+        if reserved_cols := sorted(self.check_reserved_cols(columns_b)):
             err_str = f'Reserved columns in table "B": {", ".join(reserved_cols)}'
 
             if warn_on_reserved:
@@ -1060,7 +974,7 @@ class PairwiseIntersect:
             else:
                 raise ValueError(err_str)
 
-            df_b = df_b.drop(RESERVED_COLS, strict=False)
+            df_b = df_b.drop(reserved_cols, strict=False)
 
         # Cast columns
         try:
@@ -1200,7 +1114,7 @@ class PairwiseIntersect:
         'max']" will contain "pl.col('end_a')" because if pos_b greater than any "end_a", then variants cannot overlap.
 
         :param df_a: Table chunk.
-        :param df_b: Table to be chunked to records that may intersect with df_a.
+        :param df_b: Table to be chunked to records that may overlap with df_a.
         :param chrom: Chromosome name.
 
         :returns: df_b partitioned (LazyFrame).
@@ -1275,11 +1189,11 @@ def join_iter(
     match_ref: bool = False,
     match_alt: bool = False,
     match_prop_min: Optional[float] = None
-) -> Generator[pl.LazyFrame, None, None]:
+) -> Iterator[pl.LazyFrame]:
     """A convenience wrapper for running joins.
 
-    This function creates a :class:`PairwiseIntersect` object and calls
-    :meth:`PairwiseIntersect.join_iter()`.
+    This function creates a :class:`PairwiseOverlap` object and calls
+    :meth:`PairwiseOverlap.join_iter()`.
 
     :param df_a: Table A.
     :param df_b: Table B.
@@ -1294,7 +1208,7 @@ def join_iter(
 
     :yields: A LazyFrame for each chunk.
     """  # noqa: D402 (complains about "join()" in the dicstring).
-    return PairwiseIntersect(
+    return PairwiseOverlap(
         ro_min=ro_min,
         size_ro_min=size_ro_min,
         offset_max=offset_max,
@@ -1318,8 +1232,8 @@ def join(
 ) -> pl.LazyFrame:
     """A convenience wrapper for running joins.
 
-    This function creates a :class:`PairwiseIntersect` object and calls
-    :meth:`PairwiseIntersect.join()`.
+    This function creates a :class:`PairwiseOverlap` object and calls
+    :meth:`PairwiseOverlap.join()`.
 
     :param df_a: Table A.
     :param df_b: Table B.
@@ -1333,7 +1247,7 @@ def join(
 
     :returns: A join table.
     """  # noqa: D402 (complains about "join()" in the dicstring).
-    return PairwiseIntersect(
+    return PairwiseOverlap(
         ro_min=ro_min,
         size_ro_min=size_ro_min,
         offset_max=offset_max,
