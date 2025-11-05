@@ -84,7 +84,7 @@ class PairwiseSequential(PairwiseJoin):
 
         :returns: A join table.
         """
-        return pl.concat(*self.join_iter(df_a, df_b))
+        return pl.concat(list(self.join_iter(df_a, df_b)))
 
     def join_iter(
             self,

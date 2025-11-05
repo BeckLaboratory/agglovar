@@ -84,6 +84,7 @@ def dedup_iter_first(
 
         yield df
 
+
 def dedup_iter_max(
         join_iter: Iterator[pl.LazyFrame],
         missing_weight_strategy: Optional[WeightStrategy] = None
@@ -101,30 +102,28 @@ def dedup_iter_max(
     # Fill missing weights
     if missing_weight_strategy is not None:
         weight_expr = pl.coalesce(
-            pl.col(f'^weight$'),
+            pl.col(r'^weight$'),
             missing_weight_strategy.expr,
             pl.lit(0.0)
         ).cast(pl.Float32)
     else:
         weight_expr = pl.coalesce(
-            pl.col(f'^weight$'),
+            pl.col(r'^weight$'),
             pl.lit(0.0)
         ).cast(pl.Float32)
 
     # Filter for max weight
-    return iter(
-        (
-            pl.concat(join_iter)
-            .with_columns(
-                weight_expr.alias('weight')
-            )
-            .filter(
-                pl.col('weight')
-                .rank(method='ordinal', descending=True)
-                .over('index_a', 'index_b')
-                == 1
-            )
-            .collect()
-            .lazy()
-        ),
+    yield (
+        pl.concat(join_iter)
+        .with_columns(
+            weight_expr.alias('weight')
+        )
+        .filter(
+            pl.col('weight')
+            .rank(method='ordinal', descending=True)
+            .over('index_a', 'index_b')
+            == 1
+        )
+        .collect()
+        .lazy()
     )

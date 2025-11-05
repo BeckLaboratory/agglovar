@@ -401,7 +401,7 @@ AUTOGEN_COLS: frozenset[str] = frozenset({
 MIN_CHUNK_SIZE: int = 100
 """Minimum chunk size."""
 
-DEFAULT_CHUNK_SIZE: int = 10_000
+DEFAULT_CHUNK_SIZE: int = 5_000
 """
 Default size to chunk tables before joining. A value of 10,000 works well to balance combinatorial
 explosion without exploding the number of chunks to merge when overlapping large variant tables.
@@ -837,16 +837,81 @@ class PairwiseOverlap(PairwiseJoin):
 
         :yields: A LazyFrame for each chunk.
         """
+        join_empty = True  # Detects if no joins were written
+
         # Prepare tables
         df_a, df_b = self.prepare_tables(df_a, df_b, warn_on_reserved=True)
 
-        # Join per chromosome
-        chrom_list = df_a.select('chrom_a').unique().collect().to_series().sort().to_list()
+        for chrom, last_index_a in (
+            df_a
+            .group_by('chrom_a')
+            .agg(pl.len().alias('last_index'))
+            .sort('chrom_a')
+        ).collect().rows():
+            start_index_a = 0
 
-        self.lock()
+            df_a_chrom = (
+                df_a.filter(pl.col('chrom_a') == chrom)
+                .with_row_index('_index_chrom_a')
+            )
 
-        if len(chrom_list) == 0:
-            # No chromosomes found, yield empty table (otherwise, concat across iterater will fail on an empty list)
+            while start_index_a < last_index_a:
+                end_index_a = start_index_a + self.chunk_size
+
+                df_a_chunk = df_a_chrom.filter(
+                    pl.col('_index_chrom_a') >= start_index_a,
+                    pl.col('_index_chrom_a') < end_index_a
+                ).collect().lazy()
+
+                df_b_chunk = (
+                    self._chunk_relative(df_a_chunk, df_b, chrom)
+                    .with_row_index('_index_chunk_b')
+                ).collect().lazy()
+
+                start_index_b = 0
+                last_index_b = df_b_chunk.select(pl.col('_index_chunk_b').max() + 1).collect().item()
+
+                if last_index_b is None:
+                    start_index_a = end_index_a
+                    continue
+
+                while start_index_b < last_index_b:
+                    end_index_b = start_index_b + self.chunk_size
+
+                    yield (
+                        df_a_chunk
+                        .join_where(
+                            df_b_chunk.filter(
+                                pl.col('_index_chunk_b') >= start_index_b,
+                                pl.col('_index_chunk_b') < end_index_b
+                            ),
+                            *(self._join_predicates if self._join_predicates else [pl.lit(True)])
+                        )
+                        .select(
+                            *self._join_cols
+                        )
+                        .filter(
+                            *(self._join_filters if self._join_filters else [pl.lit(True)])
+                        )
+                        .with_columns(
+                            self.weight_strategy.expr.alias('weight')
+                        )
+                        .sort(
+                            ['index_a', 'index_b']
+                        )
+                        .collect()
+                        .lazy()
+                    )
+
+                    join_empty = False
+
+                    start_index_b = end_index_b
+
+                start_index_a = end_index_a
+
+        if join_empty:
+            # If no join tables were yielded, yield an empty one. This creates an empty join table
+            # with the correct structure and prevents pl.concat from failing on an empty list.
             yield (
                 df_a.head(0)
                 .join_where(
@@ -859,53 +924,103 @@ class PairwiseOverlap(PairwiseJoin):
                 .filter(
                     *(self._join_filters if self._join_filters else [pl.lit(True)])
                 )
+                .with_columns(
+                    self.weight_strategy.expr.alias('weight')
+                )
                 .sort(
                     ['index_a', 'index_b']
                 )
-            )
-
-        for chrom in chrom_list:
-            range_a_min, range_a_max = (
-                df_a
-                .filter(
-                    pl.col('chrom_a') == chrom
-                )
-                .select(
-                    pl.col('_index_a').min().alias('min'),
-                    (pl.col('_index_a').max() + 1).alias('max')
-                )
                 .collect()
-                .transpose()
-                .to_series()
+                .lazy()
             )
 
-            chunk_size_chrom = self.chunk_size if self.chunk_size > 0 else range_a_max - range_a_min
-
-            for i_a in range(range_a_min, range_a_max, chunk_size_chrom):
-                i_a_end = min(i_a + chunk_size_chrom, range_a_max)
-
-                df_a_chunk = chunk_index(df_a, i_a, i_a_end)
-                df_b_chunk = self._chunk_relative(df_a_chunk, df_b, chrom)
-
-                yield (
-                    df_a_chunk
-                    .join_where(
-                        df_b_chunk,
-                        *(self._join_predicates if self._join_predicates else [pl.lit(True)])
-                    )
-                    .select(
-                        *self._join_cols
-                    )
-                    .filter(
-                        *(self._join_filters if self._join_filters else [pl.lit(True)])
-                    )
-                    .with_columns(
-                        self.weight_strategy.expr.alias('weight')
-                    )
-                    .sort(
-                        ['index_a', 'index_b']
-                    )
-                )
+    # def join_iter(
+    #         self,
+    #         df_a: pl.DataFrame | pl.LazyFrame,
+    #         df_b: pl.DataFrame | pl.LazyFrame
+    # ) -> Iterator[pl.LazyFrame]:
+    #     """Find all pairs of variants in two sources that meet a set of criteria.
+    #
+    #     :param df_a: Source dataframe.
+    #     :param df_b: Target dataframe.
+    #
+    #     :yields: A LazyFrame for each chunk.
+    #     """
+    #     # Prepare tables
+    #     df_a, df_b = self.prepare_tables(df_a, df_b, warn_on_reserved=True)
+    #
+    #     # Join per chromosome
+    #     chrom_list = df_a.select('chrom_a').unique().collect().to_series().sort().to_list()
+    #
+    #     self.lock()
+    #
+    #     if len(chrom_list) == 0:
+    #         # No chromosomes found, yield empty table (otherwise, concat across iterater will fail on an empty list)
+    #         yield (
+    #             df_a.head(0)
+    #             .join_where(
+    #                 df_b.head(0),
+    #                 *(self._join_predicates if self._join_predicates else [pl.lit(True)])
+    #             )
+    #             .select(
+    #                 *self._join_cols
+    #             )
+    #             .filter(
+    #                 *(self._join_filters if self._join_filters else [pl.lit(True)])
+    #             )
+    #             .sort(
+    #                 ['index_a', 'index_b']
+    #             )
+    #         )
+    #
+    #     for chrom in chrom_list:
+    #         print(f'Join chrom: {chrom}')  # DEBUG
+    #
+    #         range_a_min, range_a_max = (
+    #             df_a
+    #             .filter(
+    #                 pl.col('chrom_a') == chrom
+    #             )
+    #             .select(
+    #                 pl.col('_index_a').min().alias('min'),
+    #                 (pl.col('_index_a').max() + 1).alias('max')
+    #             )
+    #             .collect()
+    #             .transpose()
+    #             .to_series()
+    #         )
+    #
+    #         chunk_size_chrom = self.chunk_size if self.chunk_size > 0 else range_a_max - range_a_min
+    #
+    #         for i_a in range(range_a_min, range_a_max, chunk_size_chrom):
+    #             i_a_end = min(i_a + chunk_size_chrom, range_a_max)
+    #
+    #             df_a_chunk = chunk_index(df_a, i_a, i_a_end)
+    #             df_b_chunk = self._chunk_relative(df_a_chunk, df_b, chrom)
+    #
+    #             df_a.chunk = df_a_chunk.collect()
+    #
+    #             print(f'\t* Chunk size: {i_a_end - i_a}x{df_b_chunk.select(pl.len()).collect().item()}')  # DEBUG
+    #
+    #             yield (
+    #                 df_a_chunk
+    #                 .join_where(
+    #                     df_b_chunk,
+    #                     *(self._join_predicates if self._join_predicates else [pl.lit(True)])
+    #                 )
+    #                 .select(
+    #                     *self._join_cols
+    #                 )
+    #                 .filter(
+    #                     *(self._join_filters if self._join_filters else [pl.lit(True)])
+    #                 )
+    #                 .with_columns(
+    #                     self.weight_strategy.expr.alias('weight')
+    #                 )
+    #                 .sort(
+    #                     ['index_a', 'index_b']
+    #                 )
+    #             )
 
     def prepare_tables(
             self,
@@ -1124,7 +1239,6 @@ class PairwiseOverlap(PairwiseJoin):
         ]
 
         for (col_name, limit), expr_list in self._chunk_range.items():
-
             if limit == 'min':
                 filter_list.append(
                     pl.col(col_name + '_b') >= (

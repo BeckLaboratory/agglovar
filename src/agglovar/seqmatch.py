@@ -49,7 +49,7 @@ class MatchScoreModel:
     match: float = AFFINE_SCORE_MATCH
     mismatch: float = AFFINE_SCORE_MISMATCH
     affine_gap: float = AFFINE_SCORE_GAP
-    map_limit: Optional[int] = 2000
+    map_limit: Optional[int] = None
     jaccard_kmer: int = 9
     rotate_min: int = 3
     score_model: AffineScoreModel = None

@@ -1,13 +1,12 @@
 """String utility functions."""
 
-from collections.abc import Container
+from collections.abc import Container, Iterable, Iterator
 from typing import Optional
 
 def collision_rename(
         var_name: str,
         separator: Optional[str] = '.',
         *args: Container[str],
-
 ) -> str:
     """Rename a variable to avoid collisions with existing values.
 
@@ -16,7 +15,7 @@ def collision_rename(
 
     :param var_name: Variable name.
     :param separator: Separator to use between the variable name and the counter. If None, defaults to ".".
-    :param args: One or more (like "cls") to search.
+    :param args: One or more containers to search for matches.
 
     :return: Renamed string.
     """
@@ -31,3 +30,28 @@ def collision_rename(
         new_var_name = f"{var_name}{separator}{i}"
 
     return new_var_name
+
+def collision_rename_all(
+        var_names: Iterable[str],
+        separator: Optional[str] = '.',
+        *args: Container[str],
+) -> Iterator[str]:
+    """Iterate through a list of names and deduplicate.
+
+    :param var_names: Iterator of names.
+    :param separator: Separator to use between the variable name and the counter. If None, defaults to ".".
+    :param args: One or more containers to search for matches.
+
+    :return: An iterator of deduplicated names.
+    """
+    var_name_set = set()
+
+    args = [var_name_set] + list(args)
+
+    for var_name in var_names:
+        var_name = collision_rename(var_name, separator, *args)
+
+        var_name_set.add(var_name)
+
+        yield var_name
+
