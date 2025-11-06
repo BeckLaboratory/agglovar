@@ -28,6 +28,7 @@ import polars.selectors as cs
 from ..meta.decorators import immutable
 from ..pairwise.base import PairwiseJoin
 from ..meta.decorators import immutable
+from ..util.var import id_version_expr
 
 from .base import (
     CallsetDefType,
@@ -150,6 +151,7 @@ class MergeCumulative(MergeBase):
             raise ValueError('Missing pairwise_join')
 
         self.pairwise_join = pairwise_join
+        self.lead_strategy = lead_strategy
 
     def __call__(
             self,
@@ -160,10 +162,8 @@ class MergeCumulative(MergeBase):
         Intersect callsets.
 
         :param callsets: Callsets to intersect.
-        :param pre_check_schema: If True, check the schema on all input tables before intersecting.
-            this catches errors early and produces better error messages, but can be expensive if
-            a lazy frame was input with non-trivial transformations. Should be True for most
-            input.
+        :param retain_index: If `True`, do not drop an existing "_index" column in callset tables
+            if they exist.
 
         :return: A merged callset table.
         """
@@ -178,7 +178,7 @@ class MergeCumulative(MergeBase):
 
         for df_next, src_name, src_index in callsets:
             if missing_cols := required_cols - set(df_next.collect_schema().names()):
-                raise ValueError(f'Missing columns for source ({next_name}, index {next_index}): "{", ".join(sorted(missing_cols))}"')
+                raise ValueError(f'Missing columns for source ({src_name}, index {src_index}): "{", ".join(sorted(missing_cols))}"')
 
             for col, dtype in df_next.collect_schema().items():
                 if col not in all_col_dict:
@@ -273,9 +273,9 @@ class MergeCumulative(MergeBase):
         )
 
         # Choose lead variant
-        if lead_strategy is LeadStrategy.LEFT:
+        if self.lead_strategy is LeadStrategy.LEFT:
             src_index_expr = pl.col('mg_src_pos').list.arg_min()
-        elif lead_strategy is LeadStrategy.FIRST:
+        elif self.lead_strategy is LeadStrategy.FIRST:
             src_index_expr = pl.lit(0)
         else:
             raise ValueError(f'Unknown lead_strategy: {lead_strategy!r}')
@@ -327,7 +327,7 @@ class MergeCumulative(MergeBase):
                 on='_mg_index', how='inner'
             )
             .drop('_mg_index')
-            .with_columns(agglovar.util.var.id_version_expr())
+            .with_columns(id_version_expr())
             .select(col_order)
             .sort('chrom', 'pos', 'end', 'id')
         )
