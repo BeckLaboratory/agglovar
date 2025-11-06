@@ -2,6 +2,8 @@
 
 __all__ = [
     'str',
+    'var',
 ]
 
 from . import str
+from . import var

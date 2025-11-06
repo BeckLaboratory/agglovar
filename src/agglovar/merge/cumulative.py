@@ -72,7 +72,7 @@ def _init_cumulative(
 
     :return: A table ready to be used as a cumulative table or appended to an existing one.
     """
-    mg_cols = ('_mg_src', '_mg_src_id', '_mg_src_name', '_mg_src_pos')
+    mg_cols = ('_mg_src', '_mg_src_pos', '_mg_stat')
     required_cols = set(required_cols) - set(mg_cols)
 
     return (
@@ -82,17 +82,16 @@ def _init_cumulative(
             *required_cols
         )
         .with_columns(  # Source columns
-            pl.lit([int(src_index)]).cast(pl.List(pl.Int32)).alias('_mg_src'),
-            pl.lit([str(src_name)]).cast(pl.List(pl.String)).alias('_mg_src_name'),
-            pl.lit([]).list.concat(pl.col('_mg_index')).alias('_mg_src_index'),
-            pl.lit([]).list.concat(pl.col('id').cast(pl.String)).alias('_mg_src_id'),
+            pl.concat_list(
+                pl.struct(
+                    pl.lit(src_index).cast(pl.Int32).alias('index'),
+                    pl.lit(src_name).cast(pl.String).alias('id'),
+                    pl.col('_mg_index').alias('var_index'),
+                    pl.col('id').cast(pl.String).alias('var_id'),
+                )
+            ).alias('_mg_src'),
             pl.lit([]).list.concat(pl.col('pos').cast(pl.Int64)).alias('_mg_src_pos'),
-        )
-        .with_columns(  # Merge stat columns
-            *(
-                pl.lit([]).cast(pl.List(dtype)).alias(f'_mg_stat_{col}')
-                for col, dtype in merge_stat_cols.items()
-            )
+            pl.lit([]).cast(pl.List(pl.Struct(merge_stat_cols))).alias('_mg_stat')
         )
     )
 
@@ -111,14 +110,20 @@ def _get_match(
             left_on='_mg_index', right_on='_mg_join_index_a', how='inner'
         )
         .with_columns(
-            pl.col('_mg_src').list.concat(pl.lit(int(src_index))),
-            pl.col('_mg_src_name').list.concat(pl.lit(str(src_name))),
-            pl.col('_mg_src_index').list.concat(pl.col('_mg_join_index_b')),
-            pl.col('_mg_src_id').list.concat(pl.col('_mg_join_id')),
+            pl.col('_mg_src').list.concat(
+                pl.struct(
+                    pl.lit(src_index).cast(pl.Int32).alias('index'),
+                    pl.lit(src_name).cast(pl.String).alias('id'),
+                    pl.col('_mg_join_index_b').alias('var_index'),
+                    pl.col('_mg_join_id').cast(pl.String).alias('var_id'),
+                )
+            ),
             pl.col('_mg_src_pos').list.concat(pl.col('_mg_join_pos')),
-            *(
-                pl.col(f'_mg_stat_{col}').list.concat(pl.col(f'_mg_join_{col}').cast(dtype))
-                    for col, dtype in merge_stat_cols.items()
+            pl.col('_mg_stat').list.concat(
+                pl.struct(**{
+                    col: pl.col(f'_mg_join_{col}').cast(dtype)
+                        for col, dtype in merge_stat_cols.items()
+                })
             )
         )
         .drop('_mg_index', cs.starts_with('_mg_join_'))
@@ -178,8 +183,6 @@ class MergeCumulative(MergeBase):
             for col, dtype in df_next.collect_schema().items():
                 if col not in all_col_dict:
                     all_col_dict[col] = dtype
-                # elif all_col_dict[col] != dtype:
-                #     raise ValueError(f'Column {col} has different types in different sources: {all_col_dict[col]} vs {dtype}')
 
         required_cols = [col for col in all_col_dict.keys() if col in required_cols]  # To list in order found in tables
 
@@ -227,10 +230,8 @@ class MergeCumulative(MergeBase):
             # 2) No-match: Keep cumulative records that were not updated
             # 3) New: New records in this callset
 
-            df_match = (
-                _get_match(
-                    df_cumulative, df_next, df_join, src_index, src_name, merge_stat_cols
-                )
+            df_match = _get_match(
+                df_cumulative, df_next, df_join, src_index, src_name, merge_stat_cols
             )
 
             df_nomatch = (  # Gather records that were not updated
@@ -282,7 +283,6 @@ class MergeCumulative(MergeBase):
         df_cumulative = (
             df_cumulative.with_columns(
                 pl.col('mg_src').list.get(src_index_expr).alias('mg_src_lead'),
-                pl.col('mg_src_index').list.get(src_index_expr).alias('mg_src_lead_index'),
             )
             .with_row_index('_mg_index')
             .collect()
@@ -291,7 +291,7 @@ class MergeCumulative(MergeBase):
         # Finalize, copy variant columns from the
         lead_list = []
 
-        mg_cols = [col for col in df_cumulative.columns if not col.startswith('_')]
+        mg_cols = [col for col in df_cumulative.columns if not col.startswith('_') and col != 'mg_src_pos']
         table_cols = [col for col in all_col_dict.keys() if col not in mg_cols and not col.startswith('_')]
         col_order = table_cols + mg_cols
 
@@ -304,10 +304,13 @@ class MergeCumulative(MergeBase):
                     (
                         df_cumulative
                         .lazy()
-                        .filter(pl.col('mg_src_lead') == src_index)
-                        .select('_mg_index', 'mg_src_lead_index')
+                        .filter(pl.col('mg_src_lead').struct.field('index') == src_index)
+                        .select(
+                            '_mg_index',
+                            pl.col('mg_src_lead').struct.field('var_index').alias('_mg_src_var_index'),
+                        )
                     ),
-                    left_on='_index', right_on='mg_src_lead_index', how='inner'
+                    left_on='_index', right_on='_mg_src_var_index', how='inner'
                 )
                 .drop('_index')
             )
@@ -320,14 +323,11 @@ class MergeCumulative(MergeBase):
         return (
             pl.concat(lead_list)
             .join(
-                (
-                    df_cumulative
-                    .lazy()
-                    .with_columns(pl.col('mg_src_lead_index').alias('_mg_index'))  # Copy so "mg_src_lead_index" is not lost
-                ),
+                df_cumulative.lazy(),
                 on='_mg_index', how='inner'
             )
             .drop('_mg_index')
+            .with_columns(agglovar.util.var.id_version_expr())
             .select(col_order)
             .sort('chrom', 'pos', 'end', 'id')
         )
