@@ -1,5 +1,7 @@
 """Variant utilites."""
 
+from typing import Any
+
 import polars as pl
 
 def id_version_expr(
@@ -20,9 +22,7 @@ def id_version_expr(
     expr_id = pl.col(id_col).str.replace(r'\.[0-9]*$', '')
 
     expr_version = (
-        pl.coalesce(
-            pl.col(r'^filter$'), pl.lit([])
-        ).list.len()
+        pl.col('filter')
         .rank(method='ordinal')
         .over(expr_id)
         - 1

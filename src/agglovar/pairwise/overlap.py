@@ -442,6 +442,7 @@ class PairwiseOverlap(PairwiseJoin):
     size_ro_min: Optional[float] = BoundedFloat(min_val=(0.0, False), max_val=1.0)
     offset_max: Optional[int] = BoundedInt(0)
     offset_prop_max: Optional[float] = BoundedFloat(0.0)
+    seg_ro_min: Optional[float] = BoundedFloat(min_val=0.0, max_val=1.0)
     match_ref: bool = CheckedBool()
     match_alt: bool = CheckedBool()
     match_prop_min: Optional[float]
@@ -461,12 +462,14 @@ class PairwiseOverlap(PairwiseJoin):
 
     def __init__(
             self,
+            *,
             ro_min: Optional[float] = None,
             size_ro_min: Optional[float] = None,
             offset_max: Optional[int] = None,
             offset_prop_max: Optional[float] = None,
             match_ref: bool = False,
             match_alt: bool = False,
+            seg_ro_min: Optional[float] = None,
             match_prop_min: Optional[float] = None,
             match_score_model: Optional[MatchScoreModel] = None,
             force_end_ro: bool = False,
@@ -482,6 +485,7 @@ class PairwiseOverlap(PairwiseJoin):
         self.offset_prop_max = offset_prop_max
         self.match_ref = match_ref
         self.match_alt = match_alt
+        self.seg_ro_min = seg_ro_min
         self.match_prop_min = match_prop_min
         self.match_score_model = match_score_model
         self.force_end_ro = force_end_ro
@@ -495,19 +499,14 @@ class PairwiseOverlap(PairwiseJoin):
         self._expected_cols = {'chrom', 'pos', 'end'}
         self._chunk_range = dict()
 
-
         # Reusable join-table expressions
         expr_overlap_ro = (
             (
                 (
-                    pl.min_horizontal(
-                        [pl.col('_end_ro_a'), pl.col('_end_ro_b')]
-                    )
-                    - pl.max_horizontal(
-                        [pl.col('pos_a'), pl.col('pos_b')]
-                    )
+                    pl.min_horizontal('_end_ro_a', '_end_ro_b')
+                    - pl.max_horizontal('pos_a', 'pos_b')
                 ) / (
-                    pl.max_horizontal([pl.col('varlen_a'), pl.col('varlen_b')])
+                    pl.max_horizontal('varlen_a', 'varlen_b')
                 )
             )
             .clip(0.0, 1.0)
@@ -517,9 +516,9 @@ class PairwiseOverlap(PairwiseJoin):
         expr_szro = (
             (
                 (
-                    pl.min_horizontal([pl.col('varlen_a'), pl.col('varlen_b')])
+                    pl.min_horizontal('varlen_a', 'varlen_b')
                 ) / (
-                    pl.max_horizontal([pl.col('varlen_a'), pl.col('varlen_b')])
+                    pl.max_horizontal('varlen_a', 'varlen_b')
                 )
             )
             .cast(pl.Float32)
@@ -535,15 +534,13 @@ class PairwiseOverlap(PairwiseJoin):
 
         expr_offset_prop = (
             (
-                expr_offset_dist / pl.min_horizontal([pl.col('varlen_a'), pl.col('varlen_b')])
+                expr_offset_dist / pl.min_horizontal('varlen_a', 'varlen_b')
             )
             .cast(pl.Float32)
         )
 
         expr_match_prop = (
-            pl.struct(
-                pl.col('seq_a'), pl.col('seq_b')
-            )
+            pl.struct('seq_a', 'seq_b')
             .map_elements(
                 lambda s: self.match_score_model.match_prop(s['seq_a'], s['seq_b']),
                 return_dtype=pl.Float32
@@ -609,6 +606,12 @@ class PairwiseOverlap(PairwiseJoin):
             self.append_join_filters(
                 pl.col('match_prop') >= self.match_prop_min
             )
+
+        if self.seg_ro_min is not None:
+            self._add_expected_cols((pl.col('seg_a'), pl.col('seg_b')))
+            # self.append_join_predicates(
+            #     pl.col('ro_seg') >= self.seg_ro_min
+            # )
 
         #
         # Advanced Configuration Attributes
@@ -878,7 +881,7 @@ class PairwiseOverlap(PairwiseJoin):
                 while start_index_b < last_index_b:
                     end_index_b = start_index_b + self.chunk_size
 
-                    yield (
+                    df_join = (
                         df_a_chunk
                         .join_where(
                             df_b_chunk.filter(
@@ -899,9 +902,127 @@ class PairwiseOverlap(PairwiseJoin):
                         .sort(
                             ['index_a', 'index_b']
                         )
-                        .collect()
-                        .lazy()
                     )
+
+                    if self.seg_ro_min is not None:
+                        df_seg_ro = (
+                            df_join
+                            .select('index_a', 'index_b')
+                            .join(
+                                (
+                                    df_a_chunk
+                                    .with_columns(
+                                        # Query bases aligned in segments
+                                        pl.col('seg_a').list.eval(
+                                            (
+                                                pl.element().struct.field('qry_end')
+                                                - pl.element().struct.field('qry_pos')
+                                            ).abs()
+                                        )
+                                        .list.sum()
+                                        .alias('seg_qry_len_a')
+                                    )
+                                    .explode('seg_a')
+                                    .with_row_index('_seg_a_index')
+                                ),
+                                left_on='index_a', right_on='_index_a', how='inner'
+                            )
+                            .join(
+                                (
+                                    df_b_chunk
+                                    .with_columns(
+                                        # Query bases aligned in segments
+                                        pl.col('seg_b').list.eval(
+                                            (
+                                                pl.element().struct.field('qry_end')
+                                                - pl.element().struct.field('qry_pos')
+                                            ).abs()
+                                        )
+                                        .list.sum()
+                                        .alias('seg_qry_len_b')
+                                    )
+                                    .explode('seg_b')
+                                    .with_row_index('_seg_b_index')
+                                ),
+                                left_on='index_b', right_on='_index_b', how='inner'
+                            )
+                            .with_columns(
+                                (
+                                    # Overlapping bases (reference)
+                                    (
+                                        pl.min_horizontal(
+                                            pl.col('seg_a').struct.field('end'), pl.col('seg_b').struct.field('end')
+                                        )
+                                        - pl.max_horizontal(
+                                            pl.col('seg_a').struct.field('pos'), pl.col('seg_b').struct.field('pos')
+                                        )
+                                    )
+                                    / (  # Reference bp to query bp
+                                        pl.col('seg_a').struct.field('end')
+                                        - pl.col('seg_a').struct.field('pos')
+                                    ).abs()
+                                    * (
+                                        pl.col('seg_a').struct.field('qry_end')
+                                        - pl.col('seg_a').struct.field('qry_pos')
+                                    ).abs()
+                                )
+                                .fill_null(0.0)
+                                .clip(0.0)
+                                .cast(pl.Float32)
+                                .alias('seg_ro_len')
+                            )
+                            .group_by('_seg_a_index', '_seg_b_index')
+                            .agg(
+                                # Resolve cross-join among segments, choose the best pairs
+                                pl.all().get(pl.col('seg_ro_len').arg_max()),
+                            )
+                            .group_by('index_a', 'index_b')
+                            .agg(
+                                (
+                                    # Compute segment RO...
+                                    (
+                                        # Sum of overlapping segments in query bp (estimated, above)
+                                        pl.col('seg_ro_len').sum()
+
+                                        # Unaligned segment bp
+                                        + pl.min_horizontal(
+                                            (pl.col('qry_end_a').first() - pl.col('qry_pos_a').first()).abs()
+                                            - pl.col('seg_qry_len_a').first(),
+                                            (pl.col('qry_end_b').first() - pl.col('qry_pos_b').first()).abs()
+                                            - pl.col('seg_qry_len_b').first()
+                                        )
+                                    )
+
+                                    # Divide by max length for RO
+                                    / pl.max_horizontal(
+                                        (pl.col('qry_end_a').first() - pl.col('qry_pos_a').first()).abs(),
+                                        (pl.col('qry_end_b').first() - pl.col('qry_pos_b').first()).abs(),
+                                    )
+                                )
+                                .clip(0.0, 1.0)
+                                .cast(pl.Float32)
+                                .alias('seg_ro')
+                            )
+                        )
+
+                        df_join = (
+                            df_join
+                            .join(
+                                df_seg_ro,
+                                on=['index_a', 'index_b'],
+                                how='left'
+                            )
+                            .with_columns(
+                                pl.col('seg_ro').fill_null(1.0)
+                            )
+                            .filter(
+                                pl.col('seg_ro') >= self.seg_ro_min
+                            )
+                            .collect()
+                            .lazy()
+                        )
+
+                    yield df_join.collect().lazy()
 
                     join_empty = False
 

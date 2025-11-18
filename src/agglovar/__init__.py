@@ -1,6 +1,6 @@
 """Agglovar: A toolkit for fast genomic variant transformations and intersects."""
 
-__version__ = '0.0.1.dev4'
+__version__ = '0.0.1.dev5'
 
 __all__ = [
     'align',

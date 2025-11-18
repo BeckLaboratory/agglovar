@@ -20,12 +20,10 @@ __all__ = [
 
 from collections.abc import Iterable
 from enum import Enum
-from typing import Optional
 
 import polars as pl
 import polars.selectors as cs
 
-from ..meta.decorators import immutable
 from ..pairwise.base import PairwiseJoin
 from ..meta.decorators import immutable
 from ..util.var import id_version_expr
@@ -91,8 +89,15 @@ def _init_cumulative(
                     pl.col('id').cast(pl.String).alias('var_id'),
                 )
             ).alias('_mg_src'),
-            pl.lit([]).list.concat(pl.col('pos').cast(pl.Int64)).alias('_mg_src_pos'),
+            pl.lit([]).cast(pl.List(pl.Int64)).alias('_mg_src_pos'),  # Create list
             pl.lit([]).cast(pl.List(pl.Struct(merge_stat_cols))).alias('_mg_stat')
+        )
+        .with_columns(
+            # Concat to list in a separate step. Polars 1.33.1 raises
+            # "ShapeError: series length 0 does not match expected length of 1"
+            # If concat is done when the empty-list column is created (previous .with_columns()).
+            # May be a Polars bug.
+            pl.col('_mg_src_pos').list.concat(pl.col('pos').cast(pl.Int64))
         )
     )
 
@@ -157,7 +162,7 @@ class MergeCumulative(MergeBase):
             self,
             callsets: Iterable[CallsetDefType],
             retain_index: bool = False
-    ) -> pl.DataFrame:
+    ) -> pl.LazyFrame:
         """
         Intersect callsets.
 
@@ -278,7 +283,7 @@ class MergeCumulative(MergeBase):
         elif self.lead_strategy is LeadStrategy.FIRST:
             src_index_expr = pl.lit(0)
         else:
-            raise ValueError(f'Unknown lead_strategy: {lead_strategy!r}')
+            raise ValueError(f'Unknown lead_strategy: {self.lead_strategy!r}')
 
         df_cumulative = (
             df_cumulative.with_columns(
@@ -291,9 +296,18 @@ class MergeCumulative(MergeBase):
         # Finalize, copy variant columns from the
         lead_list = []
 
+        if 'filter' not in all_col_dict:
+            all_col_dict['filter'] = pl.List(pl.String)
+            drop_filter = True
+        else:
+            drop_filter = False
+
         mg_cols = [col for col in df_cumulative.columns if not col.startswith('_') and col != 'mg_src_pos']
         table_cols = [col for col in all_col_dict.keys() if col not in mg_cols and not col.startswith('_')]
         col_order = table_cols + mg_cols
+
+        if drop_filter:
+            col_order = [col for col in col_order if col != 'filter']
 
         for df_next, src_name, src_index in callsets:
             df_next_cols = set(df_next.collect_schema().names())
@@ -318,6 +332,10 @@ class MergeCumulative(MergeBase):
             for col in set(table_cols) - df_next_cols:
                 df_next = df_next.with_columns(pl.lit(None).cast(all_col_dict[col]).alias(col))
 
+            df_next = df_next.with_columns(
+                pl.col('filter').fill_null([])
+            )
+
             lead_list.append(df_next)
 
         return (
@@ -326,8 +344,8 @@ class MergeCumulative(MergeBase):
                 df_cumulative.lazy(),
                 on='_mg_index', how='inner'
             )
-            .drop('_mg_index')
             .with_columns(id_version_expr())
+            .drop(*(['_mg_index'] + ['filter'] if drop_filter else []))
             .select(col_order)
             .sort('chrom', 'pos', 'end', 'id')
         )
