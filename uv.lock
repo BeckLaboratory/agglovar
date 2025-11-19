@@ -23,6 +23,7 @@ plot = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "arrow" },
     { name = "flake8" },
     { name = "flake8-bugbear" },
     { name = "flake8-docstrings" },
@@ -31,6 +32,7 @@ dev = [
     { name = "flake8-pyproject" },
     { name = "flake8-rst-docstrings" },
     { name = "ipython" },
+    { name = "pyarrow" },
     { name = "pylint" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -55,6 +57,7 @@ provides-extras = ["plot", "all"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "arrow", extras = ["parquet"], specifier = ">=1.4.0" },
     { name = "flake8", specifier = ">=7.3.0" },
     { name = "flake8-bugbear", specifier = ">=24.12.12" },
     { name = "flake8-docstrings", specifier = ">=1.7.0" },
@@ -63,6 +66,7 @@ dev = [
     { name = "flake8-pyproject", specifier = ">=1.2.3" },
     { name = "flake8-rst-docstrings", specifier = ">=0.3.1" },
     { name = "ipython", specifier = ">=9.4.0" },
+    { name = "pyarrow", specifier = ">=22.0.0" },
     { name = "pylint", specifier = ">=3.3.7" },
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "pytest-cov", specifier = ">=6.2.1" },
@@ -80,6 +84,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a6/f8/d9c74d0daf3f742840fd818d69cfae176fa332022fd44e3469487d5a9420/alabaster-1.0.0.tar.gz", hash = "sha256:c00dca57bca26fa62a6d7d0a9fcce65f3e026e9bfe33e9c538fd3fbb2144fd9e", size = 24210, upload-time = "2024-07-26T18:15:03.762Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7e/b3/6b4067be973ae96ba0d615946e314c5ae35f9f993eca561b356540bb0c2b/alabaster-1.0.0-py3-none-any.whl", hash = "sha256:fc6786402dc3fcb2de3cabd5fe455a2db534b371124f1f21de8731783dec828b", size = 13929, upload-time = "2024-07-26T18:15:02.05Z" },
+]
+
+[[package]]
+name = "arrow"
+version = "1.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+    { name = "tzdata" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b9/33/032cdc44182491aa708d06a68b62434140d8c50820a087fac7af37703357/arrow-1.4.0.tar.gz", hash = "sha256:ed0cc050e98001b8779e84d461b0098c4ac597e88704a655582b21d116e526d7", size = 152931, upload-time = "2025-10-18T17:46:46.761Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ed/c9/d7977eaacb9df673210491da99e6a247e93df98c715fc43fd136ce1d3d33/arrow-1.4.0-py3-none-any.whl", hash = "sha256:749f0769958ebdc79c173ff0b0670d59051a535fa26e8eba02953dc19eb43205", size = 68797, upload-time = "2025-10-18T17:46:45.663Z" },
 ]
 
 [[package]]

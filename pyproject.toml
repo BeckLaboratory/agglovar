@@ -51,6 +51,7 @@ maintainers = [
 
 [dependency-groups]
 dev = [
+    "arrow[parquet]>=1.4.0",
     "flake8>=7.3.0",
     "flake8-bugbear>=24.12.12",
     "flake8-docstrings>=1.7.0",
@@ -59,6 +60,7 @@ dev = [
     "flake8-pyproject>=1.2.3",
     "flake8-rst-docstrings>=0.3.1",
     "ipython>=9.4.0",
+    "pyarrow>=22.0.0",
     "pylint>=3.3.7",
     "pytest>=8.4.1",
     "pytest-cov>=6.2.1",
