@@ -80,7 +80,7 @@ class AutoInitBase(ABC, Generic[T]):
 
     @abstractmethod
     def non_optional_default(self) -> T:
-        """Called to get a default value when """
+        """Called to get a default value when the parameter is not optional and the default is None."""
         raise NotImplementedError
 
     def __init_subclass__(cls, **kwargs) -> None:
@@ -205,6 +205,34 @@ class CheckedBool(AutoInitBase[bool]):
         """Called to get a default value when the parameter is not optional and the default is None."""
         return False
 
+class CheckedObject(AutoInitBase[object]):
+
+    def __init__(
+            self,
+            default: Optional[object] = None,
+            optional: Optional[bool] = None,
+            name_priv: Optional[str] = None,
+    ) -> None:
+        """
+        Create a checked boolean.
+
+        If not specified, the value is initialized to None if optional or False if not optional.
+
+        :param default: Default value. May not be `None` if the field is not optional.
+        :param optional: If not `None`, Override typing hints and explicitly set if this attribute is optional (not
+            recommended).
+        :param name_priv: Private name. Defaults to public name prepended with "_". Can be a pattern including a "name"
+            wildcard (e.g. "_{name}").
+        """
+        super().__init__(
+            default=default,
+            optional=optional,
+            name_priv=name_priv
+        )
+
+    def non_optional_default(self) -> object:
+        """Called to get a default value when the parameter is not optional and the default is None."""
+        raise ValueError(f'Attribute {self.name_pub}: Default value is required when not optional.')
 
 class OneWayBool(CheckedBool):
     """One-way boolean. Once it changes from its default, it cannot change back."""

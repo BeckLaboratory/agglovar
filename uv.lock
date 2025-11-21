@@ -10,7 +10,7 @@ dependencies = [
     { name = "edlib" },
     { name = "numpy" },
     { name = "ply" },
-    { name = "polars-u64-idx", extra = ["numpy", "pandas", "pyarrow"] },
+    { name = "polars", extra = ["numpy", "pandas", "pyarrow"] },
 ]
 
 [package.optional-dependencies]
@@ -51,7 +51,7 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'plot'", specifier = ">=3.10.3" },
     { name = "numpy", specifier = ">=2.3.0" },
     { name = "ply", specifier = ">=3.11" },
-    { name = "polars-u64-idx", extras = ["numpy", "pandas", "pyarrow"], specifier = ">=1.33.1" },
+    { name = "polars", extras = ["numpy", "pandas", "pyarrow"], specifier = ">=1.35.2" },
 ]
 provides-extras = ["plot", "all"]
 
@@ -1234,17 +1234,15 @@ wheels = [
 ]
 
 [[package]]
-name = "polars-u64-idx"
-version = "1.33.1"
+name = "polars"
+version = "1.35.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a6/2d/21a6c64da9024d90c188f226e36625c779478caa0774c67edfe33d2022af/polars_u64_idx-1.33.1.tar.gz", hash = "sha256:c93f832dc3c0e8ef6877b861668f4641f271cd55295764a245ca216cb7dac755", size = 4821436, upload-time = "2025-09-09T08:37:53.745Z" }
+dependencies = [
+    { name = "polars-runtime-32" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fa/43/09d4738aa24394751cb7e5d1fc4b5ef461d796efcadd9d00c79578332063/polars-1.35.2.tar.gz", hash = "sha256:ae458b05ca6e7ca2c089342c70793f92f1103c502dc1b14b56f0a04f2cc1d205", size = 694895, upload-time = "2025-11-09T13:20:05.921Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4e/42/9a195c0f89704ee12b56cde1a6e03542542881d8ce897bc89b2204658890/polars_u64_idx-1.33.1-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:1638c734a3bb3343bd1cc018a0d0a7703b0f394e0cf0c74e6ded1fa45c7b8524", size = 38999382, upload-time = "2025-09-09T08:37:27.235Z" },
-    { url = "https://files.pythonhosted.org/packages/8e/83/fa59b0fced320a640e318496c6965a902e045563fa2a29c8b12d80013bea/polars_u64_idx-1.33.1-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:7ee4f830dfb3b04a8ec8f971ad4354de7f403722b68e80d8153d251328e5347f", size = 35512080, upload-time = "2025-09-09T08:37:31.132Z" },
-    { url = "https://files.pythonhosted.org/packages/c7/87/43561d06100aa368d2232a31d0f2ea7974f436f5c7dd7d876883891b69e5/polars_u64_idx-1.33.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b5c8abae1a3a4f7a637877b61536c43ba675a2cbfe0860c08d48a7f65e78ee4e", size = 39658976, upload-time = "2025-09-09T08:37:35.273Z" },
-    { url = "https://files.pythonhosted.org/packages/39/2c/0560f550e472e47db34ee8900f82714ec1a0106b0f444ab2ae690a152f01/polars_u64_idx-1.33.1-cp39-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:09d8b49e8a9d37658f9afa38f43558fe6b070ccfef2cc3e81d4ba60615462183", size = 36572444, upload-time = "2025-09-09T08:37:39.116Z" },
-    { url = "https://files.pythonhosted.org/packages/f2/ff/6c5b669659b9092a56bbb2b65a280192e251dea7ea1641675611250648f7/polars_u64_idx-1.33.1-cp39-abi3-win_amd64.whl", hash = "sha256:225f9ab8cc37a15d5de243a748e6e865b13c686e057cf57aaebee9b5e07cef4b", size = 39358320, upload-time = "2025-09-09T08:37:42.604Z" },
-    { url = "https://files.pythonhosted.org/packages/61/dc/36c56cecfd6b6a889ec40b6511f21362d5981a92e5e61b5fa89011523ec8/polars_u64_idx-1.33.1-cp39-abi3-win_arm64.whl", hash = "sha256:48e9cd8a6d7b21ee0863a3706d9a05c66a39339d35088685da095d201881d668", size = 35350509, upload-time = "2025-09-09T08:37:45.895Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/9a/24e4b890c7ee4358964aa92c4d1865df0e8831f7df6abaa3a39914521724/polars-1.35.2-py3-none-any.whl", hash = "sha256:5e8057c8289ac148c793478323b726faea933d9776bd6b8a554b0ab7c03db87e", size = 783597, upload-time = "2025-11-09T13:18:51.361Z" },
 ]
 
 [package.optional-dependencies]
@@ -1257,6 +1255,20 @@ pandas = [
 ]
 pyarrow = [
     { name = "pyarrow" },
+]
+
+[[package]]
+name = "polars-runtime-32"
+version = "1.35.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cb/75/ac1256ace28c832a0997b20ba9d10a9d3739bd4d457c1eb1e7d196b6f88b/polars_runtime_32-1.35.2.tar.gz", hash = "sha256:6e6e35733ec52abe54b7d30d245e6586b027d433315d20edfb4a5d162c79fe90", size = 2694387, upload-time = "2025-11-09T13:20:07.624Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/de/a532b81e68e636483a5dd764d72e106215543f3ef49a142272b277ada8fe/polars_runtime_32-1.35.2-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:e465d12a29e8df06ea78947e50bd361cdf77535cd904fd562666a8a9374e7e3a", size = 40524507, upload-time = "2025-11-09T13:18:55.727Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/0b/679751ea6aeaa7b3e33a70ba17f9c8150310792583f3ecf9bb1ce15fe15c/polars_runtime_32-1.35.2-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:ef2b029b78f64fb53f126654c0bfa654045c7546bd0de3009d08bd52d660e8cc", size = 36700154, upload-time = "2025-11-09T13:18:59.78Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/c8/fd9f48dd6b89ae9cff53d896b51d08579ef9c739e46ea87a647b376c8ca2/polars_runtime_32-1.35.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:85dda0994b5dff7f456bb2f4bbd22be9a9e5c5e28670e23fedb13601ec99a46d", size = 41317788, upload-time = "2025-11-09T13:19:03.949Z" },
+    { url = "https://files.pythonhosted.org/packages/67/89/e09d9897a70b607e22a36c9eae85a5b829581108fd1e3d4292e5c0f52939/polars_runtime_32-1.35.2-cp39-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:3b9006902fc51b768ff747c0f74bd4ce04005ee8aeb290ce9c07ce1cbe1b58a9", size = 37850590, upload-time = "2025-11-09T13:19:08.154Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/40/96a808ca5cc8707894e196315227f04a0c82136b7fb25570bc51ea33b88d/polars_runtime_32-1.35.2-cp39-abi3-win_amd64.whl", hash = "sha256:ddc015fac39735592e2e7c834c02193ba4d257bb4c8c7478b9ebe440b0756b84", size = 41290019, upload-time = "2025-11-09T13:19:12.214Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/d1/8d1b28d007da43c750367c8bf5cb0f22758c16b1104b2b73b9acadb2d17a/polars_runtime_32-1.35.2-cp39-abi3-win_arm64.whl", hash = "sha256:6861145aa321a44eda7cc6694fb7751cb7aa0f21026df51b5faa52e64f9dc39b", size = 36955684, upload-time = "2025-11-09T13:19:15.666Z" },
 ]
 
 [[package]]

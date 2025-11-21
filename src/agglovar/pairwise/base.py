@@ -13,14 +13,16 @@ from typing import Optional
 
 import polars as pl
 
-from ..meta.decorators import lockable
+from ..meta.descriptors import CheckedObject
 
-from .weights import WeightStrategy, DEFAULT_WEIGHT_STRATEGY
+from .weights import (
+    WeightStrategy,
+    DEFAULT_WEIGHT_STRATEGY,
+)
 
-@lockable(attrs=False)  # Leave attribute locking to child classes
 class PairwiseJoin(ABC):
     """Base class for pairwise intersection classes."""
-    _weight_strategy: WeightStrategy
+    _weight_strategy: WeightStrategy = CheckedObject(default=DEFAULT_WEIGHT_STRATEGY)
 
     def __init__(
             self,
@@ -31,10 +33,8 @@ class PairwiseJoin(ABC):
         :param weight_strategy: Weight strategy to use for this join or default weight strategy if
             not overridden by some other mechanism (i.e. default for multi-joins).
         """
-        if weight_strategy is None:
-            weight_strategy = DEFAULT_WEIGHT_STRATEGY
-
-        self.weight_strategy = weight_strategy
+        if weight_strategy is not None:
+            self._weight_strategy = weight_strategy
 
     @abstractmethod
     def join_iter(
@@ -108,6 +108,11 @@ class PairwiseJoin(ABC):
     def reserved_cols(self) -> set[str]:
         """A set of columns that are reserved for internal use and must not be present in input tables."""
         return set()
+
+    @property
+    def weight_strategy(self) -> WeightStrategy:
+        """Weight strategy to use for this join."""
+        return self._weight_strategy
 
     def check_reserved_cols(
             self,

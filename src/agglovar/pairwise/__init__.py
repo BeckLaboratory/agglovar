@@ -12,14 +12,10 @@ each variant table using custom expressions.
 
 __all__ = [
     'base',
-    'dedup',
     'overlap',
-    'sequential',
     'weights',
 ]
 
 from . import base
-from . import dedup
 from . import overlap
-from . import sequential
 from . import weights
