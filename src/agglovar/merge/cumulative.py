@@ -217,7 +217,6 @@ class MergeCumulative(MergeBase):
             df_join = (
                 (
                     self.pairwise_join.join(df_cumulative, df_next.drop('_index'))
-                    .sort('weight', descending=False)
                     .unique('index_a', keep='first')
                     .unique('index_b', keep='first')
                     .sort('index_a', 'index_b')

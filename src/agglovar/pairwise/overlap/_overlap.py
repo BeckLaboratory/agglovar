@@ -5,7 +5,6 @@ __all__ = [
 ]
 
 from collections.abc import (
-    Callable,
     Iterable,
     Iterator,
     Mapping,
@@ -43,6 +42,7 @@ from ._const import (
 
 from ._stage import PairwiseOverlapStage
 
+@immutable
 class PairwiseOverlap(PairwiseJoin):
     """Pairwise overlap class.
 
@@ -155,28 +155,6 @@ class PairwiseOverlap(PairwiseJoin):
     def reserved_cols(self) -> set[str]:
         return set(RESERVED_COLS)
 
-    # @property
-    # def chunk_range(self) -> dict[tuple[str, str], list[pl.Expr]]:
-    #     """Get expressions for chunking.
-    #
-    #     A dict of keys to a list of expressions used to subset df_b to include only variants
-    #     that may match variants in a df_a chunk.
-    #
-    #     Keys are formatted as "field_limit" where "limit" is "min" or "max" (e.g. "pos_min"
-    #     is the minimum value for "pos"). The list of expressions associated with a key are
-    #     executed on a df_a chunk, and the minimum or maximum value from the list (one element
-    #     per record in df_a) is used as the limit value for a field in df_b. For example, if
-    #     "pos_min" is a key and [pl.col('pos_a')] is the value, then the expression takes the
-    #     minimum value of pos_a across all records in df_a and uses it to filter df_b such that
-    #     no variant in the chunked df_b table has "pos_b" less than this minimum value. If
-    #     multiple expressions are given, then all expressions are executed and the minimum or
-    #     maximum value for all is taken. This allows non-trivial chunking of df_b necessary to
-    #     restrict combinatorial explosion for certain parameters. For example, if reciprocal
-    #     overlap (ro_min) is set, the maximum position in df_b is determined by the minimum end
-    #     position in df_a (i.e. "pos_max" will contain "pl.col('end_ro_a'))".
-    #     """
-    #     return self._chunk_range.copy()
-
     @property
     def has_match(self) -> bool:
         return any(stage.has_match for stage in self.stages)
@@ -242,14 +220,16 @@ class PairwiseOverlap(PairwiseJoin):
 
         :yields: A LazyFrame for each chunk.
         """
-        raise NotImplementedError
+
+        # print('_join_iter_chunked(): Starting')
 
         join_empty = True  # Detects if no joins were written
 
+        chunk_range = self._get_chunk_range()
         chunk_size = self.chunk_size if self.chunk_size is not None else DEFAULT_CHUNK_SIZE
 
         # Prepare tables
-        df_a, df_b = self.prepare_tables(df_a, df_b, warn_on_reserved=True)
+        df_a, df_b = self._prepare_tables(df_a, df_b, warn_on_reserved=True)
 
         for chrom, last_index_a in (
             df_a
@@ -267,15 +247,19 @@ class PairwiseOverlap(PairwiseJoin):
             while start_index_a < last_index_a:
                 end_index_a = start_index_a + chunk_size
 
+                # print(f'Chunk A: {chrom}: {start_index_a} - {end_index_a}', flush=True)
+
+                chunk_list = []
+
                 df_a_chunk = df_a_chrom.filter(
                     pl.col('_index_chrom_a') >= start_index_a,
                     pl.col('_index_chrom_a') < end_index_a
-                ).collect().lazy()
+                )
 
                 df_b_chunk = (
-                    self._chunk_relative(df_a_chunk, df_b, chrom)
+                    self._chunk_relative(df_a_chunk, df_b, chrom, chunk_range)
                     .with_row_index('_index_chunk_b')
-                ).collect().lazy()
+                )
 
                 start_index_b = 0
                 last_index_b = df_b_chunk.select(pl.col('_index_chunk_b').max() + 1).collect().item()
@@ -287,24 +271,35 @@ class PairwiseOverlap(PairwiseJoin):
                 while start_index_b < last_index_b:
                     end_index_b = start_index_b + chunk_size
 
-                    yield join_func(
-                        df_a_chunk,
-                        df_b_chunk.filter(
-                            pl.col('_index_chunk_b') >= start_index_b,
-                            pl.col('_index_chunk_b') < end_index_b
+                    # print(f'* Chunk B: {start_index_b} - {end_index_b}', flush=True)
+
+                    chunk_list.append(
+                        self._join_pairwise(
+                            df_a_chunk,
+                            df_b_chunk.filter(
+                                pl.col('_index_chunk_b') >= start_index_b,
+                                pl.col('_index_chunk_b') < end_index_b
+                            )
                         )
                     )
 
-                    join_empty = False
-
                     start_index_b = end_index_b
+
+                if chunk_list:
+                    yield (
+                        pl.concat(chunk_list)
+                        .collect()
+                        .lazy()
+                    )
+
+                    join_empty = False
 
                 start_index_a = end_index_a
 
         if join_empty:
             # If no join tables were yielded, yield an empty one. This creates an empty join table
             # with the correct structure and prevents pl.concat from failing on an empty list.
-            yield self._join_equi(df_a.head(0), df_b.head(0))
+            yield self._join_pairwise(df_a.head(0), df_b.head(0))
 
     def _join_iter_notchunked(
             self,
@@ -318,10 +313,12 @@ class PairwiseOverlap(PairwiseJoin):
 
         :yields: A LazyFrame for each chunk.
         """
+        # print('_join_iter_notchunked(): Starting')
+
         join_empty = True  # Detects if no joins were written
 
         # Prepare tables
-        df_a, df_b = self.prepare_tables(df_a, df_b, warn_on_reserved=True)
+        df_a, df_b = self._prepare_tables(df_a, df_b, warn_on_reserved=True)
 
         chrom_list = sorted(
             set(df_a.select('chrom_a').unique().collect().to_series().to_list())
@@ -329,40 +326,28 @@ class PairwiseOverlap(PairwiseJoin):
         )
 
         for chrom in chrom_list:
-            yield (
-                pl.concat(
-                    self._join_pairwise(
-                        df_a.filter(pl.col('chrom_a') == chrom),
-                        df_b.filter(pl.col('chrom_b') == chrom),
-                        stage,
-                    )
-                    for stage in self.stages
-                )
-                .group_by('index_a', 'index_b')
-                .agg(
-                    pl.all().get(pl.col('weight').fill_null(0.0).arg_max())
-                )
+            yield self._join_pairwise(
+                df_a.filter(pl.col('chrom_a') == chrom),
+                df_b.filter(pl.col('chrom_b') == chrom),
             )
 
             join_empty = False
 
-
         if join_empty:
             # If no join tables were yielded, yield an empty one. This creates an empty join table
             # with the correct structure and prevents pl.concat from failing on an empty list.
-            yield self._join_pairwise(df_a.head(0), df_b.head(0), self.stages[0])
+            yield self._join_pairwise(df_a.head(0), df_b.head(0))
 
     def _join_pairwise(
             self,
             df_a: pl.LazyFrame,
             df_b: pl.LazyFrame,
-            stage: PairwiseOverlapStage,
     ) -> pl.LazyFrame:
         """Non-equi-join (pos and end not the same).
 
         Assumes both tables are filtered to the same chromosome.
         """
-        df_join = (
+        df_join_head = (
             df_a
             .join(
                 df_b,
@@ -370,31 +355,63 @@ class PairwiseOverlap(PairwiseJoin):
             )
             .filter(
                 *self.equi_join_exprs,
-                *stage.join_predicates,
-            )
-            .select(
-                *self.join_col_exprs,
             )
         )
 
-        if self.compute_weight:
-            df_join = df_join.with_columns(
-                self.weight_expr.alias('weight'),
+        join_list = []
+
+        for stage in self.stages:
+            df_join = (
+                df_join_head
+                .filter(
+                    *stage.join_predicates,
+                )
+                .select(
+                    *self.join_col_exprs,
+                )
             )
 
-        if self.compute_seg_ro:
-            df_join = self._seg_ro(df_join, df_a, df_b)
+            if self.compute_weight:
+                df_join = df_join.with_columns(
+                    self.weight_expr.alias('weight'),
+                )
 
-        df_join = (
-            df_join
-            .filter(*stage.join_filters)
-            .select(*self.join_cols)
-            .sort(['index_a', 'index_b'])
+            if self.compute_seg_ro:
+                df_join = self._seg_ro(df_join, df_a, df_b)
+
+            df_join = (
+                df_join
+                .filter(*stage.join_filters)
+                .select(*self.join_cols)
+                # .sort(['index_a', 'index_b'])
+            )
+
+            join_list.append(df_join)
+
+        return (
+            pl.concat(join_list)
+            .group_by('index_a', 'index_b')
+            .agg(
+                pl.all().get(pl.col('weight').fill_null(0.0).arg_max())
+            )
+            # .sort('index_a', 'index_b')
         )
 
-        return df_join
+    def _get_chunk_range(self) -> dict[tuple[str, str], list[pl.Expr]]:
+        """Get a dict of chunk ranges including each column and a limit."""
+        chunk_range: dict[tuple[str, str], list[pl.Expr]] = {}
 
-    def prepare_tables(
+        for stage in self.stages:
+            for col, limit, exprs in stage.chunk_range:
+                if (col, limit) not in chunk_range:
+                    chunk_range[(col, limit)] = []
+
+                chunk_range[(col, limit)].extend(exprs)
+
+        return chunk_range
+
+
+    def _prepare_tables(
             self,
             df_a: pl.DataFrame | pl.LazyFrame,
             df_b: pl.DataFrame | pl.LazyFrame,
@@ -696,12 +713,6 @@ class PairwiseOverlap(PairwiseJoin):
             stage_i += 1
 
             expr_i = 0
-            for expr in stage.join_filters:
-                expr_i += 1
-                for col in expr.meta.root_names():
-                    col_set.add(_check_expected_col(col, 'join_filters', stage_i, expr_i))
-
-            expr_i = 0
             for expr in stage.join_predicates:
                 expr_i += 1
                 for col in expr.meta.root_names():
@@ -715,6 +726,10 @@ class PairwiseOverlap(PairwiseJoin):
         if self.has_seg_ro:
             col_set.add(_check_expected_col('seg_a', 'has_seg_ro', None, None))
             col_set.add(_check_expected_col('seg_b', 'has_seg_ro', None, None))
+            col_set.add(_check_expected_col('qry_end_a', 'has_seg_ro', None, None))
+            col_set.add(_check_expected_col('qry_end_b', 'has_seg_ro', None, None))
+            col_set.add(_check_expected_col('qry_pos_a', 'has_seg_ro', None, None))
+            col_set.add(_check_expected_col('qry_pos_b', 'has_seg_ro', None, None))
 
         for col in self.expr_match_prop.meta.root_names():
             col_set.add(_check_expected_col(col, 'expr_match_prop', None, None))
@@ -732,7 +747,8 @@ class PairwiseOverlap(PairwiseJoin):
             self,
             df_a: pl.LazyFrame,
             df_b: pl.LazyFrame,
-            chrom: str
+            chrom: str,
+            chunk_range: dict[tuple[str, str], list[pl.Expr]],
     ) -> pl.LazyFrame:
         """Chunk one DataFrame relative to another.
 
@@ -764,10 +780,10 @@ class PairwiseOverlap(PairwiseJoin):
             pl.col('chrom_b') == chrom
         ]
 
-        for (col_name, limit), expr_list in self._chunk_range.items():
+        for (col_name, limit), expr_list in chunk_range.items():
             if limit == 'min':
                 filter_list.append(
-                    pl.col(col_name + '_b') >= (
+                    pl.col(col_name) >= (
                         df_a
                         .select(pl.min_horizontal(*expr_list))
                         .collect()
@@ -778,7 +794,7 @@ class PairwiseOverlap(PairwiseJoin):
 
             elif limit == 'max':
                 filter_list.append(
-                    pl.col(col_name + '_b') <= (
+                    pl.col(col_name) <= (
                         df_a
                         .select(pl.max_horizontal(*expr_list))
                         .collect()
@@ -918,31 +934,93 @@ class PairwiseOverlap(PairwiseJoin):
             )
         )
 
+    @classmethod
+    def from_definiton(
+            cls,
+            overlap_def,
+    ):
+        keys: Optional[set[str]] = None
 
-def chunk_index(
-        df_a: pl.LazyFrame,
-        i_a: int,
-        i_a_max: int
-) -> pl.LazyFrame:
-    """Chunk df_a by a range of indices.
+        # Try keys
+        try:
+            keys = set(overlap_def.keys())
 
-    WARNING: This function assumes the index range contains a single chromosome,
-    and this is not checked.
+            if 'stages' not in keys:
+                raise ValueError('Missing "stages" key in overlap definition')
+        except AttributeError:
+            pass
 
-    :param df_a: Table to chunk.
-    :param i_a: Minimum index.
-    :param i_a_max: Maximum index.
+        if keys is None:
+            try:
+                stage_list = list(overlap_def)
+            except TypeError:
+                raise ValueError(
+                    f'Definition must must be a dict-like with keys or a list-like (or itera ble) '
+                    f'of stage definitions: {type(overlap_def)}'
+                )
 
-    :returns: df_a chunked (LazyFrame).
-    """
-    if i_a < 0 or i_a_max <= i_a:
-        raise ValueError(f'Invalid index range: [{i_a}, {i_a_max})')
+            overlap_def = {
+                'stages': stage_list,
+            }
 
-    return (
-        df_a
-        .filter(pl.col('_index_a') >= i_a)
-        .filter(pl.col('_index_a') < i_a_max)
-    )
+        # Parse arguments
+        parsed_def = {}
+
+        for key, value in overlap_def.items():
+            if key == 'stages':
+                try:
+                    parsed_def['stages'] = [
+                        PairwiseOverlapStage(**stage_def)
+                            if not isinstance(stage_def, PairwiseOverlapStage) else stage_def
+                        for stage_def in value
+                    ]
+                except Exception as e:
+                    raise ValueError(f'Error creating stages: {e}') from e
+
+            elif key == 'join_cols':
+                try:
+                    parsed_def['join_cols'] = list(value)
+                except Exception as e:
+                    raise ValueError(f'Error creating join columns: {e}') from e
+
+            elif key == 'drop_default_join_cols':
+                try:
+                    parsed_def['drop_default_join_cols'] = bool(value)
+                except Exception as e:
+                    raise ValueError(f'Error creating drop_default_join_cols: {e}') from e
+
+            elif key == 'match_score_model':
+                try:
+                    parsed_def['match_score_model'] = (
+                        MatchScoreModel(*value)
+                            if not isinstance(value, MatchScoreModel) else value
+                    )
+                except Exception as e:
+                    raise ValueError(f'Error creating match_score_model: {e}') from e
+
+            elif key == 'weight_strategy':
+                try:
+                    parsed_def['weight_strategy'] = (
+                        WeightStrategy(*value)
+                            if not isinstance(value, WeightStrategy) else value
+                    )
+                except Exception as e:
+                    raise ValueError(f'Error creating weight_strategy: {e}') from e
+
+            elif key == 'force_end_ro':
+                try:
+                    parsed_def['force_end_ro'] = bool(value)
+                except Exception as e:
+                    raise ValueError(f'Error creating force_end_ro: {e}') from e
+
+            elif key == 'chunk_size':
+                try:
+                    parsed_def['chunk_size'] = int(value)
+                except Exception as e:
+                    raise ValueError(f'Error creating chunk_size: {e}') from e
+
+        return cls(**parsed_def)
+
 
 def _check_expected_col(
         col: str,
@@ -969,82 +1047,3 @@ def _check_expected_col(
         )
 
     return col[:-2]
-
-
-# def join_iter(
-#     df_a: pl.DataFrame | pl.LazyFrame,
-#     df_b: pl.DataFrame | pl.LazyFrame,
-#     ro_min: Optional[float] = None,
-#     size_ro_min: Optional[float] = None,
-#     offset_max: Optional[int] = None,
-#     offset_prop_max: Optional[float] = None,
-#     match_ref: bool = False,
-#     match_alt: bool = False,
-#     match_prop_min: Optional[float] = None
-# ) -> Iterator[pl.LazyFrame]:
-#     """A convenience wrapper for running joins.
-#
-#     This function creates a :class:`PairwiseOverlap` object and calls
-#     :meth:`PairwiseOverlap.join_iter()`.
-#
-#     :param df_a: Table A.
-#     :param df_b: Table B.
-#     :param ro_min: Minimum reciprocal overlap for allowed matches. If 0.0, then any overlap matches.
-#     :param size_ro_min: Reciprocal length proportion of allowed matches.
-#         this value represents the lower-bound of allowed match proportions.
-#     :param offset_max: Maximum offset allowed (minimum of start or end position distance).
-#     :param offset_prop_max: Maximum size-offset (offset / varlen) allowed.
-#     :param match_ref: "REF" column must match between two variants.
-#     :param match_alt: "ALT" column must match between two variants.
-#     :param match_prop_min: Minimum matched base proportion in alignment or None to not match.
-#
-#     :yields: A LazyFrame for each chunk.
-#     """  # noqa: D402 (complains about "join()" in the docstring).
-#     return PairwiseOverlap(
-#         ro_min=ro_min,
-#         size_ro_min=size_ro_min,
-#         offset_max=offset_max,
-#         offset_prop_max=offset_prop_max,
-#         match_ref=match_ref,
-#         match_alt=match_alt,
-#         match_prop_min=match_prop_min
-#     ).join_iter(df_a, df_b)
-#
-#
-# def join(
-#     df_a: pl.DataFrame | pl.LazyFrame,
-#     df_b: pl.DataFrame | pl.LazyFrame,
-#     ro_min: Optional[float] = None,
-#     size_ro_min: Optional[float] = None,
-#     offset_max: Optional[int] = None,
-#     offset_prop_max: Optional[float] = None,
-#     match_ref: bool = False,
-#     match_alt: bool = False,
-#     match_prop_min: Optional[float] = None
-# ) -> pl.LazyFrame:
-#     """A convenience wrapper for running joins.
-#
-#     This function creates a :class:`PairwiseOverlap` object and calls
-#     :meth:`PairwiseOverlap.join()`.
-#
-#     :param df_a: Table A.
-#     :param df_b: Table B.
-#     :param ro_min: Minimum reciprocal overlap for allowed matches. If 0.0, then any overlap matches.
-#     :param size_ro_min: Reciprocal length proportion of allowed matches.
-#     :param offset_max: Maximum offset allowed (minimum of start or end position distance).
-#     :param offset_prop_max: Maximum size-offset (offset / varlen) allowed.
-#     :param match_ref: "REF" column must match between two variants.
-#     :param match_alt: "ALT" column must match between two variants.
-#     :param match_prop_min: Minimum matched base proportion in alignment or None to not match.
-#
-#     :returns: A join table.
-#     """  # noqa: D402 (complains about "join()" in the dicstring).
-#     return PairwiseOverlap(
-#         ro_min=ro_min,
-#         size_ro_min=size_ro_min,
-#         offset_max=offset_max,
-#         offset_prop_max=offset_prop_max,
-#         match_ref=match_ref,
-#         match_alt=match_alt,
-#         match_prop_min=match_prop_min,
-#     ).join(df_a, df_b)
