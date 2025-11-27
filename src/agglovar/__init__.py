@@ -1,9 +1,10 @@
 """Agglovar: A toolkit for fast genomic variant transformations and intersects."""
 
-__version__ = '0.0.1.dev6'
+__version__ = '0.0.1.dev7'
 
 __all__ = [
     'align',
+    'bed',
     'fa',
     'pairwise',
     'io',
@@ -15,6 +16,7 @@ __all__ = [
 ]
 
 from . import align
+from . import bed
 from . import fa
 from . import pairwise
 from . import io
