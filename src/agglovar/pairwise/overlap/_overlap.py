@@ -607,7 +607,7 @@ class PairwiseOverlap(PairwiseJoin):
         for col in (
                 INVARIANT_JOIN_COLS
                 + (DEFAULT_JOIN_COLS if not drop_default_join_cols else [])
-                + (join_cols if join_cols else [])
+                + (list(join_cols) if join_cols else [])
         ):
             self._append_join_cols(col, join_expr_map)
 

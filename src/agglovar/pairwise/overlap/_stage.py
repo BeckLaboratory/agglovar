@@ -4,6 +4,7 @@ __all__ = [
     'PairwiseOverlapStage'
 ]
 
+from collections.abc import Iterable
 from typing import Optional
 
 import polars as pl
@@ -62,6 +63,8 @@ class PairwiseOverlapStage():
             match_ref: bool = False,
             match_alt: bool = False,
             match_prop_min: Optional[float] = None,
+            join_predicates: Optional[Iterable[pl.Expr]] = None,
+            join_filters: Optional[Iterable[pl.Expr]] = None,
     ) -> None:
         self.ro_min = ro_min
         self.size_ro_min = size_ro_min
@@ -171,6 +174,12 @@ class PairwiseOverlapStage():
             join_filters_list.append(
                 pl.col('match_prop') >= self.match_prop_min
             )
+
+        if join_predicates is not None:
+            join_predicates_list.extend(join_predicates)
+
+        if join_filters is not None:
+            join_filters_list.extend(join_filters)
 
         # Finalize
         self.join_predicates = tuple(join_predicates_list)
