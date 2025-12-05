@@ -8,10 +8,14 @@ from collections.abc import (
     Iterable,
     Iterator,
     Mapping,
+    MutableMapping,
 )
 import functools
 import operator
-from typing import Optional
+from typing import (
+    Any,
+    Optional,
+)
 from warnings import warn
 
 import polars as pl
@@ -189,7 +193,6 @@ class PairwiseOverlap(PairwiseJoin):
     def weight_expr(self):
         return self.weight_strategy.expr
 
-
     def join_iter(
             self,
             df_a: pl.DataFrame | pl.LazyFrame,
@@ -203,6 +206,9 @@ class PairwiseOverlap(PairwiseJoin):
         :yields: A LazyFrame for each chunk.
         """
 
+        # Prepare tables
+        df_a, df_b = self._prepare_tables(df_a, df_b, warn_on_reserved=True)
+
         if self.is_equi_offset or self.chunk_size == 0:
             return self._join_iter_notchunked(df_a, df_b)
 
@@ -215,21 +221,15 @@ class PairwiseOverlap(PairwiseJoin):
     ) -> Iterator[pl.LazyFrame]:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
-        :param df_a: Source dataframe.
-        :param df_b: Target dataframe.
+        :param df_a: Source dataframe after `_prepare_tables()`.
+        :param df_b: Target dataframe after `_prepare_tables()`.
 
         :yields: A LazyFrame for each chunk.
         """
-
-        # print('_join_iter_chunked(): Starting')
-
         join_empty = True  # Detects if no joins were written
 
         chunk_range = self._get_chunk_range()
         chunk_size = self.chunk_size if self.chunk_size is not None else DEFAULT_CHUNK_SIZE
-
-        # Prepare tables
-        df_a, df_b = self._prepare_tables(df_a, df_b, warn_on_reserved=True)
 
         for chrom, last_index_a in (
             df_a
@@ -308,17 +308,12 @@ class PairwiseOverlap(PairwiseJoin):
     ) -> Iterator[pl.LazyFrame]:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
-        :param df_a: Source dataframe.
-        :param df_b: Target dataframe.
+        :param df_a: Source dataframe after `_prepare_tables()`.
+        :param df_b: Target dataframe after `_prepare_tables()`.
 
         :yields: A LazyFrame for each chunk.
         """
-        # print('_join_iter_notchunked(): Starting')
-
         join_empty = True  # Detects if no joins were written
-
-        # Prepare tables
-        df_a, df_b = self._prepare_tables(df_a, df_b, warn_on_reserved=True)
 
         chrom_list = sorted(
             set(df_a.select('chrom_a').unique().collect().to_series().to_list())
@@ -644,7 +639,7 @@ class PairwiseOverlap(PairwiseJoin):
     def _append_join_cols(
             self,
             exprs: Iterable[pl.Expr | str] | pl.Expr | str,
-            join_expr_map: Mapping[str, Optional[pl.Expr]],
+            join_expr_map: MutableMapping[str, Optional[pl.Expr]],
             no_replace: bool = False,
     ) -> None:
         """Append expressions to the list of columns included in the join table.
@@ -660,7 +655,7 @@ class PairwiseOverlap(PairwiseJoin):
 
         :param exprs: A join column or a list of join columns where each may be defined as a string
             (known column name or a field already in the join table) or a Polars expression.
-        :param join_col_exprs: A dictionary to which the expressions will be added.
+        :param join_expr_map: A dictionary to which the expressions will be added.
         :param no_replace: Do not replace existing join column expressions if True.
         """
         if isinstance(exprs, (pl.Expr, str)):
@@ -937,7 +932,7 @@ class PairwiseOverlap(PairwiseJoin):
     @classmethod
     def from_definiton(
             cls,
-            overlap_def,
+            overlap_def: Mapping[str, Any] | Iterable[Mapping[str, Any]],
     ):
         keys: Optional[set[str]] = None
 
@@ -959,12 +954,12 @@ class PairwiseOverlap(PairwiseJoin):
                     f'of stage definitions: {type(overlap_def)}'
                 )
 
-            overlap_def = {
+            overlap_def: Mapping[str, Any] | Iterable[Mapping[str, Any]] = {
                 'stages': stage_list,
             }
 
         # Parse arguments
-        parsed_def = {}
+        parsed_def: dict[str, Any] = {}
 
         for key, value in overlap_def.items():
             if key == 'stages':

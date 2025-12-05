@@ -52,7 +52,7 @@ class MergeBase(ABC):
     @staticmethod
     def get_intersect_tuples(
             callsets: Iterable[CallsetDefType],
-            retain_index: bool = False
+            retain_index: bool = False,
     ) -> list[tuple[pl.LazyFrame, str, int]]:
         """
         Transform input arguments to a list of tuples with set fields.

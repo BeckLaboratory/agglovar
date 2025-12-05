@@ -161,7 +161,7 @@ class MergeCumulative(MergeBase):
     def __call__(
             self,
             callsets: Iterable[CallsetDefType],
-            retain_index: bool = False
+            retain_index: bool = False,
     ) -> pl.LazyFrame:
         """
         Intersect callsets.

@@ -31,8 +31,17 @@ class PairwiseOverlapStage():
         proportions.
     :ivar offset_max: Maximum offset allowed (minimum of start or end position distance).
     :ivar offset_prop_max: Maximum size-offset (offset / varlen) allowed.
+    :ivar seg_ro_min: Minimum reciprocal overlap by segments for merging complex variants. Compares
+        where segments are aligned for each complex variant and computes a reciprocal-overlap for
+        aligned segments between two variants. Unaligned bases overlap by default (i.e. minimum
+        total unaligned bases is in the numerator of the overlap calculation).
     :ivar match_ref: "REF" column must match between two variants.
     :ivar match_alt: "ALT" column must match between two variants.
+    :ivar match_vartype: "VARTYPE" column must match between two variants.
+    :ivar match_filter_pass: If true, then matched variants must either pass filters ("filter"
+        column emtpy for both variants) or must fail filters ("filter" column non-empty for both
+        variants). This does not compare the contents of the "filter" column, just the presence or
+        absence of a filter.
     :ivar match_prop_min: Minimum matched base proportion in alignment or None to not match.
     """
     ro_min: Optional[float] = BoundedFloat(min_val=0.0, max_val=1.0)
@@ -42,6 +51,8 @@ class PairwiseOverlapStage():
     seg_ro_min: Optional[float] = BoundedFloat(min_val=0.0, max_val=1.0)
     match_ref: bool = CheckedBool()
     match_alt: bool = CheckedBool()
+    match_vartype: bool = CheckedBool()
+    match_filter_pass: bool = CheckedBool()
     match_prop_min: Optional[float]
 
     # Table and Join Control
@@ -62,6 +73,8 @@ class PairwiseOverlapStage():
             seg_ro_min: Optional[float] = None,
             match_ref: bool = False,
             match_alt: bool = False,
+            match_vartype: bool = False,
+            match_filter_pass: bool = False,
             match_prop_min: Optional[float] = None,
             join_predicates: Optional[Iterable[pl.Expr]] = None,
             join_filters: Optional[Iterable[pl.Expr]] = None,
@@ -72,6 +85,8 @@ class PairwiseOverlapStage():
         self.offset_prop_max = offset_prop_max
         self.match_ref = match_ref
         self.match_alt = match_alt
+        self.match_vartype = match_vartype
+        self.match_filter_pass = match_filter_pass
         self.seg_ro_min = seg_ro_min
         self.match_prop_min = match_prop_min
 
@@ -165,9 +180,19 @@ class PairwiseOverlapStage():
                 pl.col('alt_a') == pl.col('alt_b')
             )
 
+        if self.match_vartype:
+            join_predicates_list.append(
+                pl.col('vartype_a') == pl.col('vartype_b')
+            )
+
         if seg_ro_min is not None:
             join_filters_list.append(
                 pl.col('seg_ro') >= self.seg_ro_min
+            )
+
+        if self.match_filter_pass:
+            join_predicates_list.append(
+                (pl.col('filter_a').list.len() == 0) ^ (pl.col('filter_b').list.len() == 0)
             )
 
         if self.match_prop_min is not None and self.match_prop_min > 0.0:

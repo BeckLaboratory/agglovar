@@ -14,6 +14,7 @@ Classes:
 __all__ = [
     'AutoInitBase',
     'CheckedBool',
+    'CheckedObject',
     'CheckedString',
     'OneWayBool',
     'BoundedInt',
