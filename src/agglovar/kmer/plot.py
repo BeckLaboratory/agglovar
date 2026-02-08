@@ -32,6 +32,19 @@ def dotplot(
 ) -> t_mpl_Figure:
     """Generate a dotplot for two sequences.
 
+    Configuration items:
+
+    * label_x, label_y: Axis labels (default "Sequence", and "Reference")
+    * start_x, start_y: Start position along each axis. Should be the first base position in the extracted region (Default 0).
+    * linewidth: Width of the lines (default 1)
+    * plot_width, plot_height, plot_dpi: Plot dimensions (default 7, 7, 300)
+    * invert_y: Invert the y axis (default False)
+    * color: A tuple of matplotlib colors for forward and reverse k-mer dots (default ("black", "red"))
+      * May be "reverse" or "rev" to reverse the order of the default colors.
+    * color_reverse: Reverse the order of the default colors (defaults to invert_y)
+    * kmer_util: A kmer_util.KmerUtil object (default None)
+    * k: K-mer size if kmer_util is missing (default 32)
+
     :params seq_x: Sequence 1 (horizontal axis).
     :params seq_y: Sequence 2 (vertical axis).
     :params config: Configuration dictionary.
@@ -56,10 +69,8 @@ def dotplot(
     # Get k-mer util.
     if 'kutil' in config:
         kutil = config['kutil']
-    elif 'k' in config:
-        kutil = kmer_util.KmerUtil(int(config['k']))
     else:
-        kutil = kmer_util.KmerUtil(32)
+        kutil = kmer_util.KmerUtil(int(config.get('k', 32)))
 
     if anno_list is None:
         anno_list = list()
@@ -72,8 +83,10 @@ def dotplot(
     elif isinstance(color, str):
         if color.lower() in {'reverse', 'rev'}:
             color = ('red', 'black')
+        elif color.lower() in {'forward', 'fwd'}:
+            color = ('black', 'red')
         else:
-            raise ValueError(f'Argument color is a string: Must be "reverse" or "rev": {color}')
+            raise ValueError(f'Argument color is a string: Must be "reverse" or "rev" or a tuple of two colors: {color}')
 
     elif isinstance(color, (list, tuple)):
         if len(color) != 2:
@@ -99,9 +112,12 @@ def dotplot(
 
     plot_props = dict()  # Plot properties, such as x and y limits
 
+    if config.get('color_reverse', invert_y):
+        color = color[::-1]
+
     # Process annotation dict
-    anno_list_background = list()
-    anno_list_foreground = list()
+    anno_list_background = []
+    anno_list_foreground = []
 
     if anno_list is None:
         anno_list = list()
