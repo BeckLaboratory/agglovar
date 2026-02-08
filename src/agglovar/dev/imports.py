@@ -6,13 +6,17 @@ __all__ = [
     'find_imports',
     'get_defined_names',
     'get_module_definitions',
+    'librl',
 ]
 
 import ast
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from graphlib import TopologicalSorter
 import importlib
 import inspect
 import re
+import sys
 from types import ModuleType
 from typing import Any, Generator, Optional
 
@@ -439,3 +443,40 @@ def get_module_definitions(
                     if include_dunder or not target.id.startswith('__'):
                         yield target.id
 
+def librl(
+        packages: Iterable[str] | str = 'agglovar',
+) -> None:
+    """Reload libraries.
+
+    Reloads all modules in the given packages and their dependencies. Attempts to resolve import
+    order by inspecting members of each package.
+
+    :param packages: Names of packages to reload. Must be top-level package names (name
+        before the first dot).
+    """
+    if isinstance(packages, str):
+        packages = {packages,}
+    else:
+        packages = set(packages)
+
+    deps: dict[str, set[str]] = {}
+
+    for key in sorted(sys.modules.keys()):
+        if key.split('.', 1)[0] not in packages:
+            continue
+
+        deps.setdefault(key, set())
+
+        for attr_name in dir(sys.modules[key]):
+            attr = getattr(sys.modules[key], attr_name)
+
+            if '__module__' in dir(attr):
+                module = attr.__module__
+
+                if not attr.__module__.split('.', 1)[0] in packages or module == key:
+                    continue
+
+                deps[key].add(attr.__module__)
+
+    for key in TopologicalSorter(deps).static_order():
+        importlib.reload(sys.modules[key])
