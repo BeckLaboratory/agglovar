@@ -1,6 +1,6 @@
 """Agglovar: A toolkit for fast genomic variant transformations and intersects."""
 
-__version__ = '0.0.1.dev8'
+__version__ = '0.0.1.dev9'
 
 __all__ = [
     'align',
@@ -13,6 +13,7 @@ __all__ = [
     'meta',
     'schema',
     'seqmatch',
+    'util',
 ]
 
 from . import align
@@ -25,3 +26,4 @@ from . import merge
 from . import meta
 from . import schema
 from . import seqmatch
+from . import util
