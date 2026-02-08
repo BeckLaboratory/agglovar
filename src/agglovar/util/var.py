@@ -1,5 +1,9 @@
 """Variant utilites."""
 
+__all__ = [
+    'id_version_expr',
+]
+
 from typing import Any
 
 import polars as pl
