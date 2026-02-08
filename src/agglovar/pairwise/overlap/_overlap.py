@@ -197,19 +197,22 @@ class PairwiseOverlap(PairwiseJoin):
             self,
             df_a: pl.DataFrame | pl.LazyFrame,
             df_b: pl.DataFrame | pl.LazyFrame,
+            retain_index: bool = False,
     ) -> Iterator[pl.LazyFrame]:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
         :param df_a: Source dataframe.
         :param df_b: Target dataframe.
+        :param retain_index: If True, do not drop an existing "_index" column in callset tables
+            if they exist.
 
         :yields: A LazyFrame for each chunk.
         """
 
         # Prepare tables
-        df_a, df_b = self._prepare_tables(df_a, df_b, warn_on_reserved=True)
+        df_a, df_b = self._prepare_tables(df_a, df_b, warn_on_reserved=True, retain_index=retain_index)
 
-        if self.is_equi_offset or self.chunk_size == 0:
+        if self.chunk_size == 0 or (self.is_equi_offset and self.chunk_size is None):
             return self._join_iter_notchunked(df_a, df_b)
 
         return self._join_iter_chunked(df_a, df_b)
@@ -410,7 +413,8 @@ class PairwiseOverlap(PairwiseJoin):
             self,
             df_a: pl.DataFrame | pl.LazyFrame,
             df_b: pl.DataFrame | pl.LazyFrame,
-            warn_on_reserved: bool = False
+            retain_index: bool = False,
+            warn_on_reserved: bool = False,
     ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
         """Prepares tables for join.
 
@@ -419,6 +423,8 @@ class PairwiseOverlap(PairwiseJoin):
 
         :param df_a: Table A.
         :param df_b: Table B.
+        :param retain_index: If True, do not drop an existing "_index" column in callset tables
+            if they exist.
         :param warn_on_reserved: If True, generate a warning if reserved columns are found and
             drop them. If false, raise an error.
 
@@ -455,25 +461,37 @@ class PairwiseOverlap(PairwiseJoin):
             )
 
         # Drop reserved columns
-        if reserved_cols := sorted(self.check_reserved_cols(columns_a)):
-            err_str = f'Reserved columns in table "A": {", ".join(reserved_cols)}'
+        reserved_col_a = self.check_reserved_cols(columns_a)
+        reserved_col_b = self.check_reserved_cols(columns_b)
+
+        retain_index_a = '_index' in reserved_col_a and retain_index
+        retain_index_b = '_index' in reserved_col_b and retain_index
+
+        if retain_index:
+            reserved_col_a -= {'_index', }
+            reserved_col_b -= {'_index', }
+
+        if reserved_col_a:
+            reserved_col_a = sorted(reserved_col_a)
+            err_str = f'Reserved columns in table "A": {", ".join(reserved_col_a)}'
 
             if warn_on_reserved:
                 warn(f'{err_str}: Dropping column(s)')
             else:
                 raise ValueError(err_str)
 
-            df_a = df_a.drop(reserved_cols, strict=False)
+            df_a = df_a.drop(reserved_col_a, strict=False)
 
-        if reserved_cols := sorted(self.check_reserved_cols(columns_b)):
-            err_str = f'Reserved columns in table "B": {", ".join(reserved_cols)}'
+        if reserved_col_b:
+            reserved_col_b = sorted(reserved_col_b)
+            err_str = f'Reserved columns in table "B": {", ".join(reserved_col_b)}'
 
             if warn_on_reserved:
                 warn(f'{err_str}: Dropping column(s)')
             else:
                 raise ValueError(err_str)
 
-            df_b = df_b.drop(reserved_cols, strict=False)
+            df_b = df_b.drop(reserved_col_b, strict=False)
 
         # Cast columns
         try:
@@ -521,15 +539,19 @@ class PairwiseOverlap(PairwiseJoin):
         )
 
         # Set index
-        df_a = (
-            df_a
-            .with_row_index('_index')
-        )
+        if not retain_index_a:
+            df_a = (
+                df_a
+                .drop('_index', strict=False)
+                .with_row_index('_index')
+            )
 
-        df_b = (
-            df_b
-            .with_row_index('_index')
-        )
+        if not retain_index_b:
+            df_b = (
+                df_b
+                .drop('_index', strict=False)
+                .with_row_index('_index')
+            )
 
         # Set ID
         if 'id' not in columns_a:

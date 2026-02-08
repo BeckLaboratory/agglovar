@@ -39,12 +39,15 @@ class PairwiseJoin(ABC):
     def join_iter(
             self,
             df_a: pl.DataFrame | pl.LazyFrame,
-            df_b: pl.DataFrame | pl.LazyFrame
+            df_b: pl.DataFrame | pl.LazyFrame,
+            retain_index: bool = False,
     ) -> Iterator[pl.LazyFrame]:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
         :param df_a: Source dataframe.
         :param df_b: Target dataframe.
+        :param retain_index: If True, do not drop an existing "_index" column in callset tables
+            if they exist.
 
         :yields: A LazyFrame for each chunk.
         """
@@ -53,7 +56,8 @@ class PairwiseJoin(ABC):
     def join(
             self,
             df_a: pl.DataFrame | pl.LazyFrame,
-            df_b: pl.DataFrame | pl.LazyFrame
+            df_b: pl.DataFrame | pl.LazyFrame,
+            retain_index: bool = False,
     ) -> pl.LazyFrame:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
@@ -61,11 +65,13 @@ class PairwiseJoin(ABC):
 
         :param df_a: Table A.
         :param df_b: Table B.
+        :param retain_index: If True, do not drop an existing "_index" column in callset tables
+            if they exist.
 
         :returns: A join table.
         """
         return pl.concat(
-            self.join_iter(df_a, df_b)
+            self.join_iter(df_a, df_b, retain_index=retain_index)
         )
 
     @property
