@@ -86,6 +86,17 @@ def as_proportion(
     if name is None or not (name := name.strip()):
         raise ValueError('Name must be a non-empty string')
 
+    if isinstance(df_a, pl.DataFrame):
+        df_a = df_a.lazy()
+
+    if isinstance(df_b, pl.DataFrame):
+        df_b = df_b.lazy()
+
+    col_set_a = set(df_a.collect_schema().names())
+
+    if '_index' not in col_set_a:
+        df_a = df_a.with_row_index('_index')
+
     # Collapse b, index a
     df_b_nr = (
         merge_depth(df_b, 0, col_names_b)
@@ -96,8 +107,6 @@ def as_proportion(
 
     df_a = (
         df_a
-        .drop('_index', strict=False)
-        .with_row_index('_index')
         .filter(
             pl.col(col_names_a.pos).is_not_null(),
             pl.col(col_names_a.end).is_not_null(),
@@ -128,11 +137,12 @@ def as_proportion(
         df_a
         .select(
             '_index',
+            '_index_a_bed_as_prop',
             (col_expr_a.end - col_expr_a.pos).alias('len')
         )
         .join(
             df_join.lazy(),
-            on='_index',
+            on='_index_a_bed_as_prop',
             how='left',
         )
         .select(

@@ -46,6 +46,15 @@ class _JoinResources:
         if isinstance(df_b, pl.DataFrame):
             df_b = df_b.lazy()
 
+        cols_a = set(df_a.collect_schema().keys())
+        cols_b = set(df_b.collect_schema().keys())
+
+        if '_index' not in cols_a:
+            df_a = df_a.with_row_index('_index')
+
+        if '_index' not in cols_b:
+            df_b = df_b.with_row_index('_index')
+
         # Set column names
         ref_cols = get_coord_cols('ref')
 
@@ -65,16 +74,18 @@ class _JoinResources:
         # Prepare tables
         df_a = (
             df_a
-            .select(*col_select_a)
-            .drop('_index_a', strict=False)
-            .with_row_index('_index_a')
+            .select(
+                pl.col('_index').alias('_index_a'),
+                *col_select_a
+            )
         )
 
         df_b = (
             df_b
-            .select(*col_select_b)
-            .drop('_index_b', strict=False)
-            .with_row_index('_index_b')
+            .select(
+                pl.col('_index').alias('_index_b'),
+                *col_select_b
+            )
         )
 
         self.df_a = df_a
@@ -322,13 +333,10 @@ def pairwise_join_tree(
 
     for df_batch_b in (
         df_b
-        .drop('_index_b', strict=False)
-        .with_row_index('_index_b')
         .select(pl.col('_index_b'), *col_b.exprs())
         .collect_batches(chunk_size=chunk_size)
     ):
         for index_b, chrom_b, pos_b, end_b in df_batch_b.iter_rows():
-            # print(f'Adding: {chrom_b} - {pos_b} - {end_b}')
             itree[chrom_b].addi(pos_b - distance, end_b + distance, index_b)
 
     # Intersect
@@ -336,8 +344,6 @@ def pairwise_join_tree(
 
     for df_chunk in (
         df_a
-        .drop('_index_a', strict=False)
-        .with_row_index('_index_a')
         .select(pl.col('_index_a'), *col_a.exprs())
         .collect_batches(chunk_size=chunk_size)
     ):
