@@ -137,12 +137,11 @@ def as_proportion(
         df_a
         .select(
             '_index',
-            '_index_a_bed_as_prop',
             (col_expr_a.end - col_expr_a.pos).alias('len')
         )
         .join(
             df_join.lazy(),
-            on='_index_a_bed_as_prop',
+            on='_index',
             how='left',
         )
         .select(
