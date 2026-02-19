@@ -276,7 +276,11 @@ class MergeCumulative(MergeBase):
             )
 
             df_cumulative = (
-                pl.concat([df_match, df_nomatch, df_new])
+                pl.concat([
+                    df_match.drop('_mg_src_index', strict=False),
+                    df_nomatch.drop('_mg_src_index', strict=False),
+                    df_new.drop('_mg_src_index', strict=False),
+                ])
                 .sort('chrom', 'pos', 'end')
                 .with_row_index('_mg_src_index')
                 .collect()
