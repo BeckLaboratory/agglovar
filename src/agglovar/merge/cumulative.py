@@ -114,7 +114,12 @@ def _get_match(
         df_cumulative
         .with_row_index('_index')
         .join(
-            df_join.lazy().select(pl.all().name.prefix('_mg_join_')),
+            (
+                df_join.lazy()
+                .select(
+                    pl.all().name.prefix('_mg_join_')
+                )
+            ),
             left_on='_index', right_on='_mg_join_index_a', how='inner'
         )
         .with_columns(
@@ -164,7 +169,7 @@ class MergeCumulative(MergeBase):
             self,
             callsets: Iterable[CallsetDefType],
             retain_index: bool = False,
-            pre_filter: Optional[Iterable[pl.Expr]] = None,
+            pre_filter: Optional[Iterable[pl.Expr] | pl.Expr] = None,
             sort: bool = True,
             add_id: bool = True,
     ) -> pl.LazyFrame:
@@ -196,21 +201,20 @@ class MergeCumulative(MergeBase):
                 if col not in all_col_dict:
                     all_col_dict[col] = dtype
 
-        required_cols = [col for col in all_col_dict.keys() if col in required_cols]  # To list in order found in tables
-
-        # Initialize cumulative table
-        df_next, src_name, src_index = callsets[0]
-
-        merge_stat_cols = {  # Empty join, gets names of columns this join will return
-            col: dtype for col, dtype in self.pairwise_join.join(df_next.head(0), df_next.head(0)).collect_schema().items()
-                if col not in {'index_a', 'index_b', 'id_a', 'id_b'}
-        }
+        # Build reqired_cols from expected columns (includes optional columns), preserve order found in tables
+        required_cols = [col for col in all_col_dict.keys() if col in set(self.pairwise_join.expected_cols)]
 
         # Cumulative merge
         df_cumulative = None
+        merge_stat_cols = None
 
         for df_next, src_name, src_index in callsets:
             if df_cumulative is None:
+                merge_stat_cols = {  # Empty join, gets names of columns this join will return
+                    col: dtype for col, dtype in self.pairwise_join.join(df_next.head(0), df_next.head(0)).collect_schema().items()
+                        if col not in {'index_a', 'index_b', 'id_a', 'id_b'}
+                }
+
                 df_cumulative = (
                     _init_cumulative(df_next, src_index, src_name, required_cols, merge_stat_cols)
                     .sort('chrom', 'pos', 'end', 'id')
@@ -224,6 +228,7 @@ class MergeCumulative(MergeBase):
             df_join = (
                 (
                     self.pairwise_join.join(df_cumulative, df_next)
+                    .sort('weight', descending=True)
                     .unique('index_a', keep='first')
                     .unique('index_b', keep='first')
                     .sort('index_a', 'index_b')
@@ -266,6 +271,9 @@ class MergeCumulative(MergeBase):
                 _init_cumulative(
                     (
                         df_next
+                        # .with_columns(
+                        #     pl.col('index_b').alias('_mg_src_index')
+                        # )
                         .join(
                             df_join.lazy(),
                             left_on='_mg_src_index', right_on='index_b', how='anti'
@@ -276,13 +284,8 @@ class MergeCumulative(MergeBase):
             )
 
             df_cumulative = (
-                pl.concat([
-                    df_match.drop('_mg_src_index', strict=False),
-                    df_nomatch.drop('_mg_src_index', strict=False),
-                    df_new.drop('_mg_src_index', strict=False),
-                ])
+                pl.concat([df_match, df_nomatch, df_new])
                 .sort('chrom', 'pos', 'end')
-                .with_row_index('_mg_src_index')
                 .collect()
                 .lazy()
             )

@@ -58,7 +58,7 @@ class MergeBase(ABC):
     def get_intersect_tuples(
             callsets: Iterable[CallsetDefType],
             retain_index: bool = False,
-            pre_filter: Optional[Iterable[pl.Expr]] = None,
+            pre_filter: Optional[Iterable[pl.Expr] | pl.Expr] = None,
     ) -> list[tuple[pl.LazyFrame, str, int]]:
         """
         Transform input arguments to a list of tuples with set fields.
@@ -92,7 +92,10 @@ class MergeBase(ABC):
 
         i = 0
 
-        pre_filter = list(pre_filter if pre_filter is not None else [])
+        if isinstance(pre_filter, pl.Expr):
+            pre_filter = [pre_filter]
+        else:
+            pre_filter = list(pre_filter if pre_filter is not None else [])
 
         if callsets is None:
             raise ValueError('Missing callsets')
@@ -143,15 +146,13 @@ class MergeBase(ABC):
                 .with_columns(
                     pl.coalesce(
                         pl.col(r'^id$'),  # Existing ID if present
-                        pl.concat_str(pl.lit('var'), pl.col('_mg_src_index'))  # Fill missing/null
-                    ).cast(pl.String).alias('id')
-                )
-                .with_columns(
-                    (
-                        pl.when(pl.col('id').is_null())
-                        .then(pl.concat_str(pl.lit('var'),  pl.col('_mg_src_index')))
-                        .otherwise(pl.col('id'))
-                    ).cast(pl.String).alias('id')
+                        pl.lit(None)
+                    )
+                    .cast(pl.String)
+                    .fill_null(
+                        pl.concat_str(pl.lit('var'),  pl.col('_mg_src_index'))
+                    )
+                    .alias('id')
                 )
                 .filter(
                     *pre_filter
