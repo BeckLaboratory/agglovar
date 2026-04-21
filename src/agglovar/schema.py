@@ -5,10 +5,14 @@ __all__ = [
     'STANDARD_FIELDS',
 ]
 
+from typing import Union
+
 import polars as pl
 
+PolarsDataType = Union[pl.DataType, type[pl.DataType]]
+
 # Schema types for variants
-VARIANT: dict[str, pl.DataType] = {
+VARIANT: dict[str, PolarsDataType] = {
     'chrom': pl.String,
     'pos': pl.Int64,
     'end': pl.Int64,
