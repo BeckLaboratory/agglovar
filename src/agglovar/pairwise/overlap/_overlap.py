@@ -952,7 +952,7 @@ class PairwiseOverlap(PairwiseJoin):
         )
 
     @classmethod
-    def from_definiton(
+    def from_definition(
             cls,
             overlap_def: Mapping[str, Any] | Iterable[Mapping[str, Any]],
     ):

@@ -192,6 +192,8 @@ def _join_chunks(
     col_a = join_resources.col_a
     col_b = join_resources.col_b
 
+    yield_count = 0
+
     for chrom, last_index_a in (
         df_a
         .group_by(col_a.chrom)
@@ -275,7 +277,37 @@ def _join_chunks(
 
                 start_index_b = end_index_b
 
+                yield_count += 1
+
             start_index_a = end_index_a
+
+    if yield_count == 0:
+        # Iterator should always return at least one chunk, even if empty. Prevents pl.concat from failing.
+        yield (
+            df_a.filter(False)
+            .join(
+                df_b.filter(False),
+                left_on=col_a.chrom,
+                right_on=col_b.chrom,
+                how='inner',
+            )
+            .filter(
+                pl.col(col_b.pos) - distance <= pl.col(col_a.end),
+                pl.col(col_b.end) + distance >= pl.col(col_a.pos),
+            )
+            .select(
+                pl.col('_index_a').alias('index_a'),
+                pl.col('_index_b').alias('index_b'),
+                pl.col(col_a.chrom).alias('chrom'),
+                pl.max_horizontal(col_a.pos, col_b.pos).alias('pos'),
+                pl.min_horizontal(col_a.end, col_b.end).alias('end'),
+            )
+            .with_columns(
+                pl.min_horizontal('pos', 'end').alias('pos'),
+                pl.max_horizontal('pos', 'end').alias('end'),
+                (pl.col('pos') - pl.col('end')).alias('distance')
+            )
+        ).collect().lazy()
 
 
 def pairwise_join_tree(
