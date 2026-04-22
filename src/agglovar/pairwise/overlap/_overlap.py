@@ -115,8 +115,9 @@ class PairwiseOverlap(PairwiseJoin):
             pl.struct('seq_a', 'seq_b')
             .map_elements(
                 lambda s: self.match_score_model.match_prop(s['seq_a'], s['seq_b']),
-                return_dtype=pl.Float32
+                return_dtype=pl.Float64
             )
+            .cast(pl.Float32)
         ) if any(stage.has_match for stage in self.stages) else (
             pl.lit(None).cast(pl.Float32)
         )
@@ -173,8 +174,9 @@ class PairwiseOverlap(PairwiseJoin):
             pl.struct('seq_a', 'seq_b')
             .map_elements(
                 lambda s: self.match_score_model.match_prop(s['seq_a'], s['seq_b']),
-                return_dtype=pl.Float32
+                return_dtype=pl.Float64
             )
+            .cast(pl.Float32)
         ) if any(stage.has_match for stage in self.stages) else (
             pl.lit(None).cast(pl.Float32)
         )
