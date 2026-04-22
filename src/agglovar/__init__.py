@@ -13,6 +13,7 @@ __all__ = [
     'meta',
     'schema',
     'seqmatch',
+    'vcf',
     'util',
 ]
 
@@ -26,4 +27,5 @@ from . import merge
 from . import meta
 from . import schema
 from . import seqmatch
+from . import vcf
 from . import util

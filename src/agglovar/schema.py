@@ -21,14 +21,18 @@ VARIANT: dict[str, PolarsDataType] = {
     'varlen': pl.Int64,
     'ref': pl.String,
     'alt': pl.String,
+    'filter': pl.List(pl.String),
     'seq': pl.String,
 }
 """Schema for variant tables."""
 
 # Standard fields and column order for variant types
 STANDARD_FIELDS: dict[str, tuple[str, ...]] = {
-    'sv': ('chrom', 'pos', 'end', 'id', 'vartype', 'varlen'),
-    'indel': ('chrom', 'pos', 'end', 'id', 'vartype', 'varlen'),
-    'snv': ('chrom', 'pos', 'id', 'ref', 'alt'),
+    'snv': ('chrom', 'pos', 'end', 'id', 'vartype', 'ref', 'alt', 'filter'),
+    'insdel': ('chrom', 'pos', 'end', 'id', 'vartype', 'varlen', 'filter', 'seq'),  # INS and DEL
+    'inv': ('chrom', 'pos', 'end', 'id', 'vartype', 'varlen', 'filter', 'seq'),
+    'dup': ('chrom', 'pos', 'end', 'id', 'vartype', 'varlen', 'filter', 'seq'),
+    'sub': ('chrom', 'pos', 'end', 'id', 'vartype', 'varlen', 'ref', 'alt', 'filter'),
+    'cpx': ('chrom', 'pos', 'end', 'id', 'vartype', 'varlen', 'filter'),
 }
-"""Standard fields and column order for variant types."""
+"""Standard fields and column order for variant types. Field "insdel" is used for both INS and DEL."""
