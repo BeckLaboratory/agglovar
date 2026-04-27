@@ -13,13 +13,15 @@ from typing import Iterable, Iterator, Optional
 import intervaltree
 import polars as pl
 
-from .col import COL_CHROM, CoordCol, get_coord_cols
+from .col import CoordCol, get_coord_cols
 
 CHUNK_SIZE: int = 2_500
 """Default size of join chunks. Breaks up tables into batches of this size or less."""
 
+
 class _JoinResources:
     """Resources for joining tables."""
+
     df_a: pl.LazyFrame
     df_b: pl.LazyFrame
     distance: int
@@ -36,7 +38,6 @@ class _JoinResources:
             col_names_a: Optional[CoordCol | Iterable[str] | str] = None,
             col_names_b: Optional[CoordCol | Iterable[str] | str] = None,
     ):
-
         if chunk_size < 1:
             raise ValueError('chunk_size must be greater than 0')
 
@@ -138,6 +139,7 @@ def pairwise_join(
         )
     ))
 
+
 def pairwise_join_iter(
         df_a: pl.LazyFrame | pl.DataFrame,
         df_b: pl.LazyFrame | pl.DataFrame,
@@ -180,11 +182,11 @@ def pairwise_join_iter(
         )
     )
 
+
 def _join_chunks(
         join_resources: _JoinResources
 ) -> Iterator[pl.LazyFrame]:
-    """An iterator for joining by chunks."""
-
+    """Iterate over join results by chunks."""
     df_a = join_resources.df_a
     df_b = join_resources.df_b
     distance = join_resources.distance
@@ -342,7 +344,6 @@ def pairwise_join_tree(
 
     :return: A DataFrame with the joined tables.
     """
-
     # Use Join Resources to normalize and check
     join_resources = _JoinResources(
         df_a=df_a,

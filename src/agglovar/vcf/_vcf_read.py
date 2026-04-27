@@ -9,7 +9,7 @@ __vcf_read_all__ = [
 
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Generator, Optional
+from typing import Generator, Optional, Union
 
 import polars as pl
 from polars.type_aliases import PolarsDataType
@@ -20,8 +20,9 @@ from agglovar.expr.variant import id_expr, sort_cols
 from ._vcf_const import VCF_SAMPLE_FIXED_SCHEMA
 from ._vcf_header import VcfHeader, _number_to_polars_type, read_vcf_header
 
-if TYPE_CHECKING:
-    import pysam
+import pysam
+
+PolarsDataType = Union[pl.DataType, type[pl.DataType]]
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +137,8 @@ def _classify_symbolic_allele(
     vartype = alt_base or svtype or 'UNK'
 
     svlen_raw = _scalar(info_vals.get('SVLEN'))
-    end_raw   = _scalar(info_vals.get('END'))
-    seq_raw   = _scalar(info_vals.get('SEQ'))
+    end_raw = _scalar(info_vals.get('END'))
+    seq_raw = _scalar(info_vals.get('SEQ'))
 
     svlen: Optional[int] = abs(int(svlen_raw)) if svlen_raw is not None else None
     # INFO/END is 1-based inclusive; in 0-based half-open BED the end equals that integer
@@ -260,6 +261,7 @@ class VcfBatch:
         sample_table: pl.LazyFrame,
         _counts: dict[str, int],
     ) -> None:
+        """Store the per-type frames and the originating header on this batch."""
         self.header = header
         self.snv = snv
         self.insdel = insdel
@@ -272,6 +274,7 @@ class VcfBatch:
         self._counts = _counts
 
     def __repr__(self) -> str:
+        """Return a debug summary including per-type record counts."""
         c = self._counts
         counts_str = (
             f'snv={c["snv"]}, insdel={c["insdel"]}, inv={c["inv"]}, '
@@ -437,8 +440,6 @@ def iter_vcf(
     :raises ValueError: If *start*/*end* is given without *chrom*, *start* > *end*,
         or a FORMAT field name collides with a reserved column name.
     """
-    import pysam
-
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f'File not found: {path}')

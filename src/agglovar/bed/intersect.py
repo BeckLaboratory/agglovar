@@ -8,6 +8,10 @@ from .join import pairwise_join_tree, pairwise_join_iter
 from .merge import merge_depth
 from .col import CoordCol, get_coord_cols
 
+__all__ = [
+    'as_bool',
+    'as_proportion',
+]
 
 def as_bool(
         df_a: pl.LazyFrame | pl.DataFrame,
@@ -71,6 +75,7 @@ def as_bool(
         )
     )
 
+
 def as_proportion(
         df_a: pl.LazyFrame | pl.DataFrame,
         df_b: pl.LazyFrame | pl.DataFrame,
@@ -78,6 +83,7 @@ def as_proportion(
         col_names_a: Optional[CoordCol | Iterable[str] | str] = None,
         col_names_b: Optional[CoordCol | Iterable[str] | str] = None,
 ) -> pl.LazyFrame:
+    """Compute the proportion of each interval in ``df_a`` covered by intervals in ``df_b``."""
     col_names_a = get_coord_cols(col_names_a)
     col_names_b = get_coord_cols(col_names_b)
 

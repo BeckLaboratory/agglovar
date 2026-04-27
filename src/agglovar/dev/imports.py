@@ -209,7 +209,7 @@ def alias_to_obj_dict(
                             )
                         ) + (
                             ('.' + module_path)
-                                if module_path is not None else ''
+                            if module_path is not None else ''
                         )
                     )
 
@@ -350,7 +350,6 @@ def get_defined_names(
         imports (None for others) and is the level of the import with 0 being the top-level and 1 or more being a
         relative import.
     """
-
     tree = ast.parse(inspect.getsource(mod))
 
     for node in tree.body:
@@ -371,8 +370,10 @@ def get_defined_names(
         elif isinstance(node, ast.ImportFrom):
 
             module_name = (
-                '.'.join(mod.__name__.split('.')[:-node.level]
-                + (node.module.split('.') if node.module else []))
+                '.'.join(
+                    mod.__name__.split('.')[:-node.level]
+                    + (node.module.split('.') if node.module else [])
+                )
             )
 
             for node_name in node.names:
@@ -443,6 +444,7 @@ def get_module_definitions(
                     if include_dunder or not target.id.startswith('__'):
                         yield target.id
 
+
 def librl(
         packages: Iterable[str] | str = 'agglovar',
 ) -> None:
@@ -455,7 +457,7 @@ def librl(
         before the first dot).
     """
     if isinstance(packages, str):
-        packages = {packages,}
+        packages = {packages, }
     else:
         packages = set(packages)
 

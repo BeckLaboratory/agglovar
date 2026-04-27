@@ -41,6 +41,7 @@ from types import UnionType
 
 T = TypeVar('T')
 
+
 class AutoInitBase(ABC, Generic[T]):
     """Base class for descriptors that should auto-initialize their private values.
 
@@ -51,6 +52,7 @@ class AutoInitBase(ABC, Generic[T]):
     ensures that when private variables are first accessed, they do not create a new key in the object __dict__ and
     force the keys to be copied instead of shared across instances.
     """
+
     name_priv: str = ''
     default: Optional[T]
     name_pub: str = ''
@@ -85,6 +87,7 @@ class AutoInitBase(ABC, Generic[T]):
         raise NotImplementedError
 
     def __init_subclass__(cls, **kwargs) -> None:
+        """Mark subclasses as non-base so they can be instantiated."""
         super().__init_subclass__(**kwargs)
         # Mark subclasses as non-base
         cls._is_base = False
@@ -170,7 +173,9 @@ class AutoInitBase(ABC, Generic[T]):
         except Exception:
             return True
 
+
 class CheckedBool(AutoInitBase[bool]):
+    """Descriptor that coerces values to bool (or None) on assignment."""
 
     def __init__(
             self,
@@ -203,10 +208,12 @@ class CheckedBool(AutoInitBase[bool]):
             raise TypeError(f'Attribute {self.name_pub}: Value must be an integer: {value!r}')
 
     def non_optional_default(self) -> bool:
-        """Called to get a default value when the parameter is not optional and the default is None."""
+        """Return a default value when the parameter is not optional and the default is None."""
         return False
 
+
 class CheckedObject(AutoInitBase[object]):
+    """Descriptor that holds an arbitrary object value."""
 
     def __init__(
             self,
@@ -232,11 +239,13 @@ class CheckedObject(AutoInitBase[object]):
         )
 
     def non_optional_default(self) -> object:
-        """Called to get a default value when the parameter is not optional and the default is None."""
+        """Return a default value when the parameter is not optional and the default is None."""
         raise ValueError(f'Attribute {self.name_pub}: Default value is required when not optional.')
+
 
 class OneWayBool(CheckedBool):
     """One-way boolean. Once it changes from its default, it cannot change back."""
+
     def __init__(
             self,
             default: bool = False,
@@ -274,13 +283,17 @@ class OneWayBool(CheckedBool):
             return
 
         if value_existing != self.default:
-            raise ValueError(f'Attribute {self.name_pub}: Cannot set {value}: One-way boolean is frozen on {value_existing}')
+            raise ValueError(
+                f'Attribute {self.name_pub}: Cannot set {value}: '
+                f'One-way boolean is frozen on {value_existing}'
+            )
 
         super().__set__(obj, value)
 
 
 class BoundedInt(AutoInitBase[int]):
     """Integer descriptor with optional minimum and maximum value enforcement."""
+
     min_val: Optional[int]
     max_val: Optional[int]
 
@@ -373,7 +386,7 @@ class BoundedInt(AutoInitBase[int]):
         )
 
     def non_optional_default(self) -> int:
-        """Called to get a default value when the parameter is not optional and the default is None."""
+        """Return a default value when the parameter is not optional and the default is None."""
         return 0
 
     @property
@@ -390,6 +403,7 @@ class BoundedInt(AutoInitBase[int]):
 
 class BoundedFloat(AutoInitBase[float]):
     """Integer descriptor with optional minimum and maximum value enforcement."""
+
     min_val: Optional[float]
     max_val: Optional[float]
     min_inclusive: bool
@@ -474,7 +488,7 @@ class BoundedFloat(AutoInitBase[float]):
         )
 
     def non_optional_default(self) -> float:
-        """Called to get a default value when the parameter is not optional and the default is None."""
+        """Return a default value when the parameter is not optional and the default is None."""
         return 0.0
 
     @property
@@ -491,6 +505,7 @@ class BoundedFloat(AutoInitBase[float]):
 
 class CheckedString(AutoInitBase[str]):
     """Enforces string constraints and supports a set of transformations before assignment."""
+
     min_len: Optional[int] = BoundedInt(0)
     max_len: Optional[int] = BoundedInt(0)
     strip: Callable[[str], str]
@@ -571,15 +586,21 @@ class CheckedString(AutoInitBase[str]):
             name_priv=name_priv
         )
 
+        def _identity(val):
+            return val
+
         if strip is not None:
             if isinstance(strip, bool):
-                strip = str.strip if strip else lambda val: val
+                strip = str.strip if strip else _identity
             elif isinstance(strip, str):
-                strip = lambda val: val.strip(strip)
+                strip_chars = strip
+
+                def strip(val):
+                    return val.strip(strip_chars)
             else:
                 raise TypeError(f'Attribute {self.name_pub}: strip must be a bool or str: {strip!r}')
         else:
-            strip = lambda val: val  # Identity function
+            strip = _identity  # Identity function
 
         self.min_len = min_len
         self.max_len = max_len
@@ -623,9 +644,13 @@ class CheckedString(AutoInitBase[str]):
             )
 
         if not self.match(value):
-            raise ValueError(f'Attribute {self.name_pub}: String fails pattern matcher {self.match!r} (len={len(value)}): {value!r}')
+            raise ValueError(
+                f'Attribute {self.name_pub}: String fails pattern matcher {self.match!r} '
+                f'(len={len(value)}): {value!r}'
+            )
 
         return value
+
 
 def _get_pattern_matcher(
     pattern: Optional[re.Pattern | str | Callable[[str], Any]] | set[str] = None,
@@ -664,6 +689,7 @@ def _get_pattern_matcher(
         return pattern
 
     raise TypeError(f'Pattern must be a re.Pattern, str, Callable[[str], Any], or None]: {pattern!r}')
+
 
 def _get_pattern_sub(
         sub: Optional[
@@ -719,20 +745,26 @@ def _get_pattern_sub(
 
     raise TypeError(f'Pattern must be a of (match, replace) values or None: Found non-str pattern: {pattern!r}')
 
+
 class _StrOrNone:
     """Call function, cast value to string if not None, else, return None."""
+
     c: Callable[[str], Optional[Any]]
 
     def __init__(self, c: Callable[[str], Optional[Any]]):
+        """Wrap ``c`` so its return value is cast to ``str`` (or kept as ``None``)."""
         self.c = c
 
     def __call__(self, val: str):
+        """Apply the wrapped callable to ``val`` and return its string result."""
         if (new_val := self.c(val)) is None:
             return None
         return str(new_val)
 
+
 class _MappableSub:
     """Calls a mapping to transform a string."""
+
     m: Mapping[str, Any]
     default: Optional[str]
     allow_missing: bool
@@ -743,11 +775,13 @@ class _MappableSub:
             default: Optional[str] = None,
             allow_missing: bool = False,
     ):
+        """Configure the mapping-backed substitution callable."""
         self.m = m
         self.default = default
         self.allow_missing = allow_missing
 
     def __call__(self, val: str):
+        """Look up ``val`` in the mapping and return its substituted value."""
         try:
             new_val = self.m[val]
         except KeyError:
@@ -756,6 +790,7 @@ class _MappableSub:
             new_val = self.default
 
         return str(new_val) if new_val is not None else None
+
 
 def _key_err_str(i: Iterable[Any], limit=50):
     """Get a string representation of a collection of keys up to a limit on the total length of keys."""

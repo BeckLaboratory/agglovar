@@ -27,6 +27,7 @@ CallsetDefType: TypeAlias = (
 )
 """Alias for acceptable types."""
 
+
 @lockable
 class MergeBase(ABC):
     """Base class for callset intersects."""
@@ -83,7 +84,6 @@ class MergeBase(ABC):
 
         :return: A list of tuples where each tuple element represents one input source.
         """
-
         name_set = set()
         callset_table: pl.LazyFrame
         callset_name_pre: Any
@@ -183,7 +183,6 @@ def _get_name(
 
     :returns: A name for this input source.
     """
-
     if name is None:
         if i is None:
             i = 0

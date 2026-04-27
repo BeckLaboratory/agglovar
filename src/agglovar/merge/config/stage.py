@@ -315,6 +315,7 @@ class IntersectStageRo(IntersectStage):
     RO computation (does not affect merged calls, END is still POS + 1 for INS
     after intersects).
     """
+
     def __init__(
             self,
             arg_list: list[tuple[str, Any, str]],

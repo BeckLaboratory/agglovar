@@ -143,6 +143,7 @@ import polars as pl
 from ..meta.decorators import immutable
 from ..meta.descriptors import CheckedBool, BoundedFloat, CheckedString
 
+
 class ElementPriority(Enum):
     """Prioritize multiple matches.
 
@@ -157,8 +158,10 @@ class ElementPriority(Enum):
     or a whole column in the weight calculation is missing. By default, null is carried through
     to the weight element, but this can be changed by the columns or the weight element itself.
     """
+
     MAX = 'MAX'
     FIRST = 'FIRST'
+
 
 @immutable
 class WeightColumn:
@@ -169,6 +172,7 @@ class WeightColumn:
     :ivar max_value: Maximum value of the column (if None, no max value is used).
     :ivar missing: Use this value if the column is missing or any columns contain a null value.
     """
+
     col: str = CheckedString(match=r'[^^*$]+')
     weight: float = BoundedFloat()
     min_value: Optional[float] = BoundedFloat()
@@ -253,6 +257,7 @@ class WeightColumn:
 
     @property
     def expr(self) -> pl.Expr:
+        """Return a Polars expression that computes this column's weighted contribution."""
         col = pl.coalesce(pl.col(f'^{self.col}$'), pl.lit(self.missing)).cast(pl.Float32)
 
         if self.max_value is not None:
@@ -272,6 +277,7 @@ class WeightColumn:
         return col * pl.lit(self.weight)
 
     def __repr__(self) -> str:
+        """Return a string representation of this weight column."""
         return f'WeightColumn({self.col!r}, {self.weight!r}, {self.max_value!r}, {self.missing!r})'
 
 
@@ -282,6 +288,7 @@ class WeightElement(Container[WeightColumn]):
     :ivar columns: Columns and their weights.
     :ivar missing: Use this value if the weighted columns sum to null.
     """
+
     columns: tuple[WeightColumn, ...]
     missing: Optional[float] = None
 
@@ -363,11 +370,14 @@ class WeightElement(Container[WeightColumn]):
         return self.columns == other.columns and self.missing == other.missing
 
     def __repr__(self) -> str:
+        """Return a string representation of this weight element."""
         return f'WeightElement(columns={self.columns!r}, missing={self.missing!r})'
+
 
 @immutable
 class WeightStrategy(Container[WeightElement]):
     """Represents one strategy for computing weights."""
+
     elements: tuple[WeightElement, ...]
     missing: Optional[float]
     priority: ElementPriority

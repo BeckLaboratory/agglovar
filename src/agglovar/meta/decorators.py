@@ -46,7 +46,6 @@ def lockable(
     :param immutable: If True, class attributes are always immutable whether or not the instance is locked.
     :param var_name: Lock variable name. Change if "_lock" is already used by the class.
     """
-
     # Handle @lockable() syntax
     if cls is None:
         return lambda cls: lockable(
@@ -148,7 +147,7 @@ def lockable(
             if msg is not None:
                 tail = ': Object is locked' if suffix else ''
                 raise AttributeError(f'{msg}{tail}')
-            raise AttributeError(f"Object is locked")
+            raise AttributeError("Object is locked")
 
     cls.check_lock = check_lock
 
@@ -171,7 +170,6 @@ def lockable(
 
 def immutable(cls=None):
     """Decorator to make a class immutable after __init__ completes."""
-
     # Handle @immutable() syntax
     if cls is None:
         return lambda cls: immutable(cls)
@@ -210,6 +208,7 @@ def immutable(cls=None):
 
     return cls
 
+
 def _collision_rename(
         var_name: str,
         *args: Container[str]
@@ -224,5 +223,4 @@ def _collision_rename(
 
     :return: Variable name.
     """
-
     return collision_rename(var_name, '_', *args)

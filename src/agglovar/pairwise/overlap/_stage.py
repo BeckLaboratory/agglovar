@@ -44,6 +44,7 @@ class PairwiseOverlapStage():
         absence of a filter.
     :ivar match_prop_min: Minimum matched base proportion in alignment or None to not match.
     """
+
     ro_min: Optional[float] = BoundedFloat(min_val=0.0, max_val=1.0)
     size_ro_min: Optional[float] = BoundedFloat(min_val=(0.0, False), max_val=1.0)
     offset_max: Optional[int] = BoundedInt(0)
@@ -57,6 +58,7 @@ class PairwiseOverlapStage():
 
     # Table and Join Control
     join_predicates: tuple[pl.Expr, ...]
+    pre_select_filters: tuple[pl.Expr, ...]
     join_filters: tuple[pl.Expr, ...]
     chunk_range: tuple[
         tuple[str, str, tuple[pl.Expr, ...]],
@@ -79,6 +81,7 @@ class PairwiseOverlapStage():
             join_predicates: Optional[Iterable[pl.Expr]] = None,
             join_filters: Optional[Iterable[pl.Expr]] = None,
     ) -> None:
+        """Configure a pairwise overlap stage with the given thresholds and column-match flags."""
         self.ro_min = ro_min
         self.size_ro_min = size_ro_min
         self.offset_max = offset_max
@@ -92,14 +95,12 @@ class PairwiseOverlapStage():
 
         # Set join control containers
         join_predicates_list: list[pl.Expr] = []
-        join_filters_list = []
+        pre_select_filters_list: list[pl.Expr] = []
+        join_filters_list: list[pl.Expr] = []
         chunk_range_dict: dict[tuple[str, str], list[pl.Expr]] = {}
 
-        # Set ranges and expressions from parameters
         if self.ro_min is not None:
-            join_predicates_list.append(
-                EXPR_OVERLAP_RO >= self.ro_min
-            )
+            join_predicates_list.append(EXPR_OVERLAP_RO >= self.ro_min)
 
             self._append_chunk_range(
                 'pos_b', 'max',
@@ -114,32 +115,41 @@ class PairwiseOverlapStage():
             )
 
         if self.size_ro_min is not None:
-            join_predicates_list.append(
-                EXPR_SZRO >= self.size_ro_min
-            )
+            join_predicates_list.append(EXPR_SZRO >= self.size_ro_min)
 
+        # Varlen bounds: both ro_min and size_ro_min imply a necessary condition on varlen_b.
+        # For SZRO >= k: varlen_b in [varlen_a * k, varlen_a / k].
+        # ro_min implies the same bound because EXPR_OVERLAP_RO <= SZRO (overlap cannot exceed
+        # the size ratio), so ro_min >= k requires SZRO >= k as a necessary condition.
+        # When both are set, use the more permissive (smaller k) so no valid match is excluded;
+        # the exact SZRO/RO filters above will reject any pair that fails the stricter check.
+        _k_varlen: Optional[float] = None
+        if self.ro_min is not None:
+            _k_varlen = self.ro_min
+        if self.size_ro_min is not None:
+            _k_varlen = self.size_ro_min if _k_varlen is None else min(_k_varlen, self.size_ro_min)
+
+        if _k_varlen is not None and _k_varlen > 0.0:
             self._append_chunk_range(
                 'varlen_b', 'min',
-                pl.col('varlen_a') * self.size_ro_min,
+                pl.col('varlen_a') * _k_varlen,
                 chunk_range_dict
             )
 
             self._append_chunk_range(
                 'varlen_b', 'max',
-                pl.col('varlen_a') * (1 / self.size_ro_min),
+                pl.col('varlen_a') / _k_varlen,
                 chunk_range_dict
             )
 
         if self.offset_max is not None:
             if self.offset_max == 0:
-                join_predicates_list.extend([  # Very fast joins on equality
+                join_predicates_list.extend([
                     pl.col('pos_a') == pl.col('pos_b'),
                     pl.col('end_a') == pl.col('end_b'),
                 ])
             else:
-                join_predicates_list.append(
-                    EXPR_OFFSET_DIST <= self.offset_max
-                )
+                join_predicates_list.append(EXPR_OFFSET_DIST <= self.offset_max)
 
             self._append_chunk_range(
                 'pos_b', 'min',
@@ -148,15 +158,13 @@ class PairwiseOverlapStage():
             )
 
             self._append_chunk_range(
-                'end_b', 'max',
-                pl.col('end_a') + self.offset_max,
+                'pos_b', 'max',
+                pl.col('pos_a') + self.offset_max,
                 chunk_range_dict
             )
 
         if self.offset_prop_max is not None:
-            join_predicates_list.append(
-                EXPR_OFFSET_PROP <= self.offset_prop_max
-            )
+            join_predicates_list.append(EXPR_OFFSET_PROP <= self.offset_prop_max)
 
             self._append_chunk_range(
                 'pos_b', 'min',
@@ -208,39 +216,21 @@ class PairwiseOverlapStage():
 
         # Finalize
         self.join_predicates = tuple(join_predicates_list)
+        self.pre_select_filters = tuple(pre_select_filters_list)
         self.join_filters = tuple(join_filters_list)
         self.chunk_range = tuple(
             tuple((str(col), str(limit), tuple(exprs)))
             for (col, limit), exprs in chunk_range_dict.items()
         )
 
-    # def append_join_predicates(
-    #         self,
-    #         expr: Iterable[pl.Expr] | pl.Expr
-    # ) -> None:
-    #     """Append expressions to a list of join predicates given as arguments to pl.join_where().
-    #
-    #     This class will construct a list of join predicates from the constructor arguments,
-    #     but additional join control may be added here.
-    #
-    #     .. Warning::
-    #         Adding predicates may alter the join results so that they are not reproducible
-    #         based on join arguments. Use with caution.
-    #
-    #     :param expr: An expression or list of expressions.
-    #     """
-    #     if isinstance(expr, pl.Expr):
-    #         expr = [expr]
-    #
-    #     self._add_expected_cols(expr)
-    #     self._join_predicates.extend(expr)
-
     @property
     def has_match(self) -> bool:
+        """True if this stage requires sequence-match scoring."""
         return self.match_prop_min is not None
 
     @property
     def has_seg_ro(self) -> bool:
+        """True if this stage uses segment reciprocal-overlap matching."""
         return self.seg_ro_min is not None
 
     def _append_chunk_range(
@@ -268,6 +258,7 @@ class PairwiseOverlapStage():
         chunk_range_dict[key, limit].append(expr)
 
     def __repr__(self) -> str:
+        """Return a string representation of the stage configuration."""
         return (
             f'{self.__class__.__name__}('
             f'ro_min={self.ro_min}, '

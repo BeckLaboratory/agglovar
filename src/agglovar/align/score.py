@@ -128,7 +128,7 @@ class ScoreModel(ABC):
             self,
             op_arr: np.ndarray,
     ) -> float:
-        """A vectorized implementation of summing scores for affine models.
+        """Sum scores for affine models using a vectorized implementation.
 
         :param op_arr: Array of alignment operations (op_code: first column, op_len: second column).
 
@@ -285,7 +285,7 @@ class AffineScoreModel(ScoreModel):
             self,
             op_arr: np.ndarray,
     ) -> float:
-        """A vectorized implementation of summing scores for affine models.
+        """Sum scores for affine models using a A vectorized implementation.
 
         :param op_arr: Array of alignment operations (op_code: first column, op_len: second column).
 

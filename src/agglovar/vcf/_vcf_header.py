@@ -17,16 +17,16 @@ import reprlib
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Union
 
 import polars as pl
-from polars.type_aliases import PolarsDataType
 
 from ._vcf_const import VCF_SOURCE, VCF_TO_POLARS_TYPE, VCF_VERSION
 
 if TYPE_CHECKING:
     import pysam
 
+PolarsDataType = Union[pl.DataType, type[pl.DataType]]
 
 # --- Module-level constants ---
 
@@ -187,6 +187,7 @@ class ContigHeader(_VcfRecord):
     assembly: Optional[str] = None
 
     def __post_init__(self) -> None:
+        """Validate fields after dataclass initialization."""
         errs: list[str] = []
         if self.length is not None and self.length < 0:
             errs.append(f'length must be non-negative, got {self.length}')
@@ -194,12 +195,14 @@ class ContigHeader(_VcfRecord):
         self.errors = tuple(errs)
 
     def __repr__(self) -> str:
+        """Return a debug representation of this contig header."""
         parts = [f'id={self.id!r}']
         if self.length is not None:
             parts.append(f'length={self.length!r}')
         return f'ContigHeader({", ".join(parts)})'
 
     def __str__(self) -> str:
+        """Return the VCF-formatted ``##contig`` header line."""
         parts = [f'ID={self.id}']
         if self.length is not None:
             parts.append(f'length={self.length}')
@@ -235,6 +238,7 @@ class InfoHeader(_VcfRecord):
     version: Optional[str] = None
 
     def __post_init__(self) -> None:
+        """Validate ``number`` and ``type`` fields after dataclass initialization."""
         errs: list[str] = []
         try:
             self.number = _parse_number(self.number, self.id)
@@ -249,12 +253,14 @@ class InfoHeader(_VcfRecord):
         self.errors = tuple(errs)
 
     def __repr__(self) -> str:
+        """Return a debug representation of this INFO header."""
         return (
             f'InfoHeader(id={self.id!r}, number={self.number!r}, '
             f'type={self.type!r}, description={reprlib.repr(self.description)})'
         )
 
     def __str__(self) -> str:
+        """Return the VCF-formatted ``##INFO`` header line."""
         parts = [
             f'ID={self.id}',
             f'Number={_fmt_number(self.number)}',
@@ -281,9 +287,11 @@ class FilterHeader(_VcfRecord):
     description: str
 
     def __repr__(self) -> str:
+        """Return a debug representation of this FILTER header."""
         return f'FilterHeader(id={self.id!r}, description={reprlib.repr(self.description)})'
 
     def __str__(self) -> str:
+        """Return the VCF-formatted ``##FILTER`` header line."""
         parts = [
             f'ID={self.id}',
             f'Description="{_escape_desc(self.description)}"',
@@ -308,6 +316,7 @@ class FormatHeader(_VcfRecord):
     description: str
 
     def __post_init__(self) -> None:
+        """Validate ``number`` and ``type`` fields after dataclass initialization."""
         errs: list[str] = []
         try:
             self.number = _parse_number(self.number, self.id)
@@ -322,12 +331,14 @@ class FormatHeader(_VcfRecord):
         self.errors = tuple(errs)
 
     def __repr__(self) -> str:
+        """Return a debug representation of this FORMAT header."""
         return (
             f'FormatHeader(id={self.id!r}, number={self.number!r}, '
             f'type={self.type!r}, description={reprlib.repr(self.description)})'
         )
 
     def __str__(self) -> str:
+        """Return the VCF-formatted ``##FORMAT`` header line."""
         parts = [
             f'ID={self.id}',
             f'Number={_fmt_number(self.number)}',
@@ -350,9 +361,11 @@ class AltHeader(_VcfRecord):
     description: str
 
     def __repr__(self) -> str:
+        """Return a debug representation of this ALT header."""
         return f'AltHeader(id={self.id!r}, description={reprlib.repr(self.description)})'
 
     def __str__(self) -> str:
+        """Return the VCF-formatted ``##ALT`` header line."""
         parts = [
             f'ID={self.id}',
             f'Description="{_escape_desc(self.description)}"',
@@ -402,6 +415,7 @@ class VcfHeader:
         reference: Optional[str] = None,
         warn_invalid: bool = True,
     ) -> None:
+        """Create an empty header initialized with the given metadata fields."""
         vcf_version = vcf_version.strip()
 
         if not vcf_version:
@@ -606,7 +620,6 @@ class VcfHeader:
         """
         del self._info[id]
 
-
     def add_filter(
         self,
         id: str,
@@ -661,7 +674,6 @@ class VcfHeader:
         """
         del self._formats[id]
 
-
     def add_alt(
         self,
         id: str,
@@ -698,7 +710,6 @@ class VcfHeader:
             raise ValueError(f'VcfHeader.add_sample: duplicate sample name {name!r}')
         self._samples.append(name)
 
-
     def remove_sample(self, name: str) -> None:
         """Remove a sample by name.
 
@@ -708,7 +719,6 @@ class VcfHeader:
             self._samples.remove(name)
         except ValueError:
             raise ValueError(f'VcfHeader.remove_sample: sample {name!r} not found')
-
 
     def add_meta(self, key: str, value: str) -> None:
         """Append an arbitrary ``##key=value`` metadata line.
@@ -792,8 +802,10 @@ class VcfHeader:
                     stacklevel=3,
                 )
 
+
 ('chrom', 'pos', 'end', 'id', 'vartype', 'varlen', 'seq')
 # --- Header reader ---
+
 
 def read_vcf_header(vcf_file: 'pysam.VariantFile') -> VcfHeader:
     """

@@ -12,6 +12,8 @@ from collections.abc import (
 )
 import functools
 import operator
+from pathlib import Path
+import tempfile
 from typing import (
     Any,
     Optional,
@@ -46,6 +48,7 @@ from ._const import (
 
 from ._stage import PairwiseOverlapStage
 
+
 @immutable
 class PairwiseOverlap(PairwiseJoin):
     """Pairwise overlap class.
@@ -63,12 +66,19 @@ class PairwiseOverlap(PairwiseJoin):
         subset df_b to include only variants that may overlap with variants in the chunk. If
         None, each chromosome is a single chunk, which will lead to a combinatorial explosion
         unless offset_max is greater than 0.
+    :ivar temp_dir: (Advanced) Controls how both prepared tables are materialised before the
+        chunked join loop to prevent repeated full-dataset scans. ``False`` (default) collects
+        both tables into memory. ``True`` writes them to the system temporary directory as
+        parquet files. A ``str`` or ``Path`` writes them to that directory. Temporary files are
+        always removed on exit, even if an error is raised.
     """
 
     # Advanced Configuration Attributes
     match_score_model: MatchScoreModel = CheckedObject(default=MatchScoreModel())
     force_end_ro: bool = CheckedBool()
     chunk_size: Optional[int] = BoundedInt(0, default=DEFAULT_CHUNK_SIZE)
+    n_threads: Optional[int] = BoundedInt(1)
+    temp_dir: bool | str | Path
 
     # Join control
     stages: tuple[PairwiseOverlapStage, ...]
@@ -91,14 +101,17 @@ class PairwiseOverlap(PairwiseJoin):
             weight_strategy: WeightStrategy = DEFAULT_WEIGHT_STRATEGY,
             force_end_ro: bool = False,
             chunk_size: Optional[int] = None,
+            n_threads: Optional[int] = None,
+            temp_dir: bool | str | Path = False,
     ) -> None:
+        """Create a pairwise overlap join with the given stages and parameters."""
         super().__init__(weight_strategy)
 
         # Set join stages
         self.stages = tuple(stages)
 
         if not self.stages:
-            raise ValueError(f'No defined overlap stages')
+            raise ValueError('No defined overlap stages')
 
         # Set parameters
         if match_score_model is not None:
@@ -109,18 +122,26 @@ class PairwiseOverlap(PairwiseJoin):
         # Chunking control
         self.chunk_size = chunk_size
         self._chunk_range = dict()
+        self.n_threads = n_threads
+        self.temp_dir = temp_dir
 
-        # Match proportion expression
-        self.expr_match_prop = (
-            pl.struct('seq_a', 'seq_b')
-            .map_elements(
-                lambda s: self.match_score_model.match_prop(s['seq_a'], s['seq_b']),
-                return_dtype=pl.Float64
+        # match_prop expression: struct-based map_elements so both seq columns are accessible.
+        # strategy='threading' runs each element in a separate Python thread. edlib is a C
+        # extension that releases the GIL, so threads run concurrently on multiple cores.
+        if any(stage.has_match for stage in self.stages):
+            _model = self.match_score_model
+
+            self.expr_match_prop = (
+                pl.struct(pl.col('seq_a'), pl.col('seq_b'))
+                .map_elements(
+                    lambda row: _model.match_prop(row['seq_a'], row['seq_b']),
+                    return_dtype=pl.Float64,
+                    strategy='threading',
+                )
+                .cast(pl.Float32)
             )
-            .cast(pl.Float32)
-        ) if any(stage.has_match for stage in self.stages) else (
-            pl.lit(None).cast(pl.Float32)
-        )
+        else:
+            self.expr_match_prop = pl.lit(None).cast(pl.Float32)
 
         # Set join columns
         self._set_join_cols(
@@ -158,28 +179,23 @@ class PairwiseOverlap(PairwiseJoin):
 
     @property
     def reserved_cols(self) -> set[str]:
+        """Columns reserved for internal use during the join."""
         return set(RESERVED_COLS)
 
     @property
     def has_match(self) -> bool:
+        """True if any stage performs sequence matching."""
         return any(stage.has_match for stage in self.stages)
 
     @property
     def has_seg_ro(self) -> bool:
+        """True if any stage computes segment reciprocal overlap."""
         return any(stage.has_seg_ro for stage in self.stages)
 
     @property
     def match_prop_expr(self):
-        return (
-            pl.struct('seq_a', 'seq_b')
-            .map_elements(
-                lambda s: self.match_score_model.match_prop(s['seq_a'], s['seq_b']),
-                return_dtype=pl.Float64
-            )
-            .cast(pl.Float32)
-        ) if any(stage.has_match for stage in self.stages) else (
-            pl.lit(None).cast(pl.Float32)
-        )
+        """Polars expression that computes the per-pair match proportion."""
+        return self.expr_match_prop
 
     @property
     def has_equi_join(self) -> bool:
@@ -193,6 +209,7 @@ class PairwiseOverlap(PairwiseJoin):
 
     @property
     def weight_expr(self):
+        """Polars expression for the configured weight strategy."""
         return self.weight_strategy.expr
 
     def join_iter(
@@ -210,14 +227,19 @@ class PairwiseOverlap(PairwiseJoin):
 
         :yields: A LazyFrame for each chunk.
         """
-
         # Prepare tables
         df_a, df_b = self._prepare_tables(df_a, df_b, warn_on_reserved=True, retain_index=retain_index)
 
         if self.chunk_size == 0 or (self.is_equi_offset and self.chunk_size is None):
             return self._join_iter_notchunked(df_a, df_b)
 
-        return self._join_iter_chunked(df_a, df_b)
+        # Materialise both tables once before the chunked loop. with_row_index in _prepare_tables
+        # blocks predicate pushdown into the parquet source, so every downstream collect would
+        # otherwise trigger a full-dataset scan.
+        if self.temp_dir is False:
+            return self._join_iter_chunked(df_a.collect().lazy(), df_b.collect().lazy())
+
+        return self._join_iter_chunked_disk(df_a, df_b)
 
     def _join_iter_chunked(
             self,
@@ -231,7 +253,7 @@ class PairwiseOverlap(PairwiseJoin):
 
         :yields: A LazyFrame for each chunk.
         """
-        join_empty = True  # Detects if no joins were written
+        join_empty = True
 
         chunk_range = self._get_chunk_range()
         chunk_size = self.chunk_size if self.chunk_size is not None else DEFAULT_CHUNK_SIZE
@@ -247,64 +269,72 @@ class PairwiseOverlap(PairwiseJoin):
             df_a_chrom = (
                 df_a.filter(pl.col('chrom_a') == chrom)
                 .with_row_index('_index_chrom_a')
+                .collect()
+                .lazy()
             )
 
             while start_index_a < last_index_a:
                 end_index_a = start_index_a + chunk_size
 
-                # print(f'Chunk A: {chrom}: {start_index_a} - {end_index_a}', flush=True)
-
-                chunk_list = []
-
                 df_a_chunk = df_a_chrom.filter(
                     pl.col('_index_chrom_a') >= start_index_a,
-                    pl.col('_index_chrom_a') < end_index_a
+                    pl.col('_index_chrom_a') < end_index_a,
+                ).collect().lazy()
+
+                df_b_filtered = self._chunk_relative(df_a_chunk, df_b, chrom, chunk_range)
+
+                yield (
+                    self._join_pairwise(df_a_chunk, df_b_filtered)
+                    .collect()
+                    .lazy()
                 )
 
-                df_b_chunk = (
-                    self._chunk_relative(df_a_chunk, df_b, chrom, chunk_range)
-                    .with_row_index('_index_chunk_b')
-                )
-
-                start_index_b = 0
-                last_index_b = df_b_chunk.select(pl.col('_index_chunk_b').max() + 1).collect().item()
-
-                if last_index_b is None:
-                    start_index_a = end_index_a
-                    continue
-
-                while start_index_b < last_index_b:
-                    end_index_b = start_index_b + chunk_size
-
-                    # print(f'* Chunk B: {start_index_b} - {end_index_b}', flush=True)
-
-                    chunk_list.append(
-                        self._join_pairwise(
-                            df_a_chunk,
-                            df_b_chunk.filter(
-                                pl.col('_index_chunk_b') >= start_index_b,
-                                pl.col('_index_chunk_b') < end_index_b
-                            )
-                        )
-                    )
-
-                    start_index_b = end_index_b
-
-                if chunk_list:
-                    yield (
-                        pl.concat(chunk_list)
-                        .collect()
-                        .lazy()
-                    )
-
-                    join_empty = False
-
+                join_empty = False
                 start_index_a = end_index_a
 
         if join_empty:
-            # If no join tables were yielded, yield an empty one. This creates an empty join table
-            # with the correct structure and prevents pl.concat from failing on an empty list.
-            yield self._join_pairwise(df_a.head(0), df_b.head(0))
+            # Yield an empty frame with the correct schema so pl.concat never sees an empty list.
+            # Collect so the yielded LazyFrame does not reference df_a/df_b — they may be
+            # scan_parquet nodes over temp files that _join_iter_chunked_disk will unlink
+            # once this generator exits.
+            yield self._join_pairwise(df_a.head(0), df_b.head(0)).collect().lazy()
+
+    def _join_iter_chunked_disk(
+            self,
+            df_a: pl.LazyFrame,
+            df_b: pl.LazyFrame,
+    ) -> Iterator[pl.LazyFrame]:
+        """Find all pairs of variants using disk-backed temp files for table materialisation.
+
+        Sinks prepared tables to temporary parquet files, then scans them for the chunked join.
+        Temp files are always removed on exit, even if an error is raised.
+
+        :param df_a: Source dataframe after `_prepare_tables()`.
+        :param df_b: Target dataframe after `_prepare_tables()`.
+
+        :yields: A LazyFrame for each chunk.
+        """
+        temp_dir_path = None if self.temp_dir is True else Path(self.temp_dir)
+
+        with tempfile.NamedTemporaryFile(
+            prefix='pairwise_overlap_prep_a_', suffix='.parquet',
+            dir=temp_dir_path, delete=False
+        ) as f:
+            path_a = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(
+            prefix='pairwise_overlap_prep_b_', suffix='.parquet',
+            dir=temp_dir_path, delete=False
+        ) as f:
+            path_b = Path(f.name)
+
+        try:
+            df_a.sink_parquet(path_a)
+            df_b.sink_parquet(path_b)
+            yield from self._join_iter_chunked(pl.scan_parquet(path_a), pl.scan_parquet(path_b))
+        finally:
+            path_a.unlink(missing_ok=True)
+            path_b.unlink(missing_ok=True)
 
     def _join_iter_notchunked(
             self,
@@ -347,28 +377,18 @@ class PairwiseOverlap(PairwiseJoin):
 
         Assumes both tables are filtered to the same chromosome.
         """
-        df_join_head = (
-            df_a
-            .join(
-                df_b,
-                how='cross'
-            )
-            .filter(
-                *self.equi_join_exprs,
-            )
-        )
-
         join_list = []
 
         for stage in self.stages:
-            df_join = (
-                df_join_head
-                .filter(
-                    *stage.join_predicates,
-                )
-                .select(
-                    *self.join_col_exprs,
-                )
+            all_predicates = (*self.equi_join_exprs, *stage.join_predicates)
+
+            if all_predicates:
+                df_join = df_a.join_where(df_b, *all_predicates)
+            else:
+                df_join = df_a.join(df_b, how='cross')
+
+            df_join = df_join.select(
+                *self.join_col_exprs,
             )
 
             if self.compute_weight:
@@ -398,18 +418,43 @@ class PairwiseOverlap(PairwiseJoin):
         )
 
     def _get_chunk_range(self) -> dict[tuple[str, str], list[pl.Expr]]:
-        """Get a dict of chunk ranges including each column and a limit."""
+        """Get a dict of chunk ranges including each column and a limit.
+
+        Only (col, limit) pairs contributed by every stage with a non-empty chunk_range are
+        retained. If any stage has no constraint on a dimension the union of stages is unbounded
+        in that dimension, so the filter must be dropped to avoid incorrectly excluding df_b
+        records that would match an unconstrained stage.
+        """
+        stages_with_range = [stage for stage in self.stages if stage.chunk_range]
+        n_stages = len(stages_with_range)
+
+        if n_stages == 0:
+            return {}
+
+        contribution_count: dict[tuple[str, str], int] = {}
         chunk_range: dict[tuple[str, str], list[pl.Expr]] = {}
 
-        for stage in self.stages:
+        for stage in stages_with_range:
+            contributed: set[tuple[str, str]] = set()
+
             for col, limit, exprs in stage.chunk_range:
-                if (col, limit) not in chunk_range:
-                    chunk_range[(col, limit)] = []
+                key = (col, limit)
 
-                chunk_range[(col, limit)].extend(exprs)
+                if key not in chunk_range:
+                    chunk_range[key] = []
+                    contribution_count[key] = 0
 
-        return chunk_range
+                chunk_range[key].extend(exprs)
 
+                if key not in contributed:
+                    contribution_count[key] += 1
+                    contributed.add(key)
+
+        return {
+            key: exprs
+            for key, exprs in chunk_range.items()
+            if contribution_count[key] == n_stages
+        }
 
     def _prepare_tables(
             self,
@@ -620,7 +665,6 @@ class PairwiseOverlap(PairwiseJoin):
         :param join_cols: Join columns to include (expressions or names).
         :param drop_default_join_cols: Drop default join columns if True.
         """
-
         join_expr_map: dict[str, Optional[pl.Expr]] = {}
 
         for col in (
@@ -738,7 +782,7 @@ class PairwiseOverlap(PairwiseJoin):
                     col_set.add(_check_expected_col(col, 'join_predicates', stage_i, expr_i))
 
             expr_i = 0
-            for col, bound, exprs in stage.chunk_range:
+            for col, _bound, _exprs in stage.chunk_range:
                 expr_i += 1
                 col_set.add(_check_expected_col(col, 'chunk_range', stage_i, expr_i))
 
@@ -801,26 +845,28 @@ class PairwiseOverlap(PairwiseJoin):
 
         for (col_name, limit), expr_list in chunk_range.items():
             if limit == 'min':
-                filter_list.append(
-                    pl.col(col_name) >= (
-                        df_a
-                        .select(pl.min_horizontal(*expr_list))
-                        .collect()
-                        .to_series()
-                        .min()
-                    )
+                scalar = (
+                    df_a
+                    .select(pl.min_horizontal(*expr_list))
+                    .collect()
+                    .to_series()
+                    .min()
                 )
 
+                if scalar is not None:
+                    filter_list.append(pl.col(col_name) >= scalar)
+
             elif limit == 'max':
-                filter_list.append(
-                    pl.col(col_name) <= (
-                        df_a
-                        .select(pl.max_horizontal(*expr_list))
-                        .collect()
-                        .to_series()
-                        .max()
-                    )
+                scalar = (
+                    df_a
+                    .select(pl.max_horizontal(*expr_list))
+                    .collect()
+                    .to_series()
+                    .max()
                 )
+
+                if scalar is not None:
+                    filter_list.append(pl.col(col_name) <= scalar)
 
             else:
                 raise ValueError(f'Unknown limit: "{limit}"')
@@ -958,6 +1004,7 @@ class PairwiseOverlap(PairwiseJoin):
             cls,
             overlap_def: Mapping[str, Any] | Iterable[Mapping[str, Any]],
     ):
+        """Build a :class:`PairwiseOverlap` instance from a stage definition mapping or sequence of mappings."""
         keys: Optional[set[str]] = None
 
         # Try keys
@@ -990,7 +1037,7 @@ class PairwiseOverlap(PairwiseJoin):
                 try:
                     parsed_def['stages'] = [
                         PairwiseOverlapStage(**stage_def)
-                            if not isinstance(stage_def, PairwiseOverlapStage) else stage_def
+                        if not isinstance(stage_def, PairwiseOverlapStage) else stage_def
                         for stage_def in value
                     ]
                 except Exception as e:
@@ -1012,7 +1059,7 @@ class PairwiseOverlap(PairwiseJoin):
                 try:
                     parsed_def['match_score_model'] = (
                         MatchScoreModel(*value)
-                            if not isinstance(value, MatchScoreModel) else value
+                        if not isinstance(value, MatchScoreModel) else value
                     )
                 except Exception as e:
                     raise ValueError(f'Error creating match_score_model: {e}') from e
@@ -1021,7 +1068,7 @@ class PairwiseOverlap(PairwiseJoin):
                 try:
                     parsed_def['weight_strategy'] = (
                         WeightStrategy(*value)
-                            if not isinstance(value, WeightStrategy) else value
+                        if not isinstance(value, WeightStrategy) else value
                     )
                 except Exception as e:
                     raise ValueError(f'Error creating weight_strategy: {e}') from e
@@ -1037,6 +1084,17 @@ class PairwiseOverlap(PairwiseJoin):
                     parsed_def['chunk_size'] = int(value)
                 except Exception as e:
                     raise ValueError(f'Error creating chunk_size: {e}') from e
+
+            elif key == 'temp_dir':
+                try:
+                    if isinstance(value, bool):
+                        parsed_def['temp_dir'] = value
+                    elif isinstance(value, Path):
+                        parsed_def['temp_dir'] = value
+                    else:
+                        parsed_def['temp_dir'] = str(value)
+                except Exception as e:
+                    raise ValueError(f'Error creating temp_dir: {e}') from e
 
         return cls(**parsed_def)
 

@@ -33,8 +33,9 @@ AUTOGEN_COLS: frozenset[str] = frozenset({
 
 DEFAULT_CHUNK_SIZE: int = 1_500
 """
-Default size to chunk tables before joining. A value of 10,000 works well to balance combinatorial
-explosion without exploding the number of chunks to merge when overlapping large variant tables.
+Default number of df_a variants per chunk. Chunking controls peak memory and determines the batch
+size presented to the sequence-alignment thread pool — larger values amortize thread-pool overhead
+better but use more memory. Tune alongside ``n_threads`` based on available RAM and CPU count.
 """
 
 EXPR_OVERLAP_RO = (

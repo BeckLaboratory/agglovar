@@ -14,6 +14,7 @@ from typing import Optional, Self, Any
 
 import polars as pl
 
+
 @dataclass(frozen=True)
 class CoordColExpr(Iterable[pl.Expr]):
     """Represents coordinate column expressions.
@@ -22,6 +23,7 @@ class CoordColExpr(Iterable[pl.Expr]):
     :ivar pos: Position column expression.
     :ivar end: End column expression.
     """
+
     chrom: pl.Expr
     pos: pl.Expr
     end: pl.Expr
@@ -49,10 +51,13 @@ class CoordColExpr(Iterable[pl.Expr]):
         return self.end.meta.output_name()
 
     def __iter__(self):
+        """Iterate over chrom, pos, and end expressions."""
         return iter((self.chrom, self.pos, self.end))
 
     def __repr__(self):
+        """Return a string representation."""
         return f"CoordColExpr({self.chrom!r}, {self.pos!r}, {self.end!r})"
+
 
 @dataclass(frozen=True, order=True)
 class CoordCol(Iterable[str], Container[str]):
@@ -62,6 +67,7 @@ class CoordCol(Iterable[str], Container[str]):
     :ivar pos: Position column name.
     :ivar end: End column name.
     """
+
     chrom: str
     pos: str
     end: str
@@ -89,24 +95,29 @@ class CoordCol(Iterable[str], Container[str]):
         return CoordColExpr(
             *(
                 pl.col(col).alias(alias + suffix)
-                    for col, alias in zip(self, alias)
+                for col, alias in zip(self, alias)
             )
         )
 
     def __iter__(self):
+        """Iterate over chrom, pos, and end column names."""
         return iter((self.chrom, self.pos, self.end))
 
     def __contains__(self, o: Optional[Any]):
+        """Test whether ``o`` is one of the coordinate column names."""
         return o in (self.chrom, self.pos, self.end)
 
     def __repr__(self):
+        """Return a string representation."""
         return f"CoordCol({self.chrom!r}, {self.pos!r}, {self.end!r})"
+
 
 COL_CHROM: CoordCol = CoordCol('chrom', 'pos', 'end')
 """Standard chromosome columns."""
 
 COL_QRY: CoordCol = CoordCol('qry_id', 'qry_pos', 'qry_end')
 """Standard query columns."""
+
 
 def get_coord_cols(
         col_names: Optional[CoordCol | str | Iterable[str]] = None,
@@ -123,7 +134,6 @@ def get_coord_cols(
 
     :return: An object with column names.
     """
-
     if isinstance(col_names, CoordCol):
         return col_names
 
@@ -137,7 +147,7 @@ def get_coord_cols(
     else:
         col_names_tuple = tuple((
             col.strip() if col is not None else None
-                for col in col_names
+            for col in col_names
         ))
 
         if len(col_names_tuple) != 3:
@@ -181,13 +191,11 @@ def make_unique_col(
 
     :return: Unique column name.
     """
-
     new_col = col
     i = 0
 
     while any(new_col in arg for arg in args):
         i += 1
         new_col = f'{col}_{i}'
-
 
     return new_col

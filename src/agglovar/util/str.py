@@ -3,6 +3,13 @@
 from collections.abc import Container, Iterable, Iterator
 from typing import Optional
 
+
+__all__ = [
+    'collision_rename',
+    'collision_rename_all',
+]
+
+
 def collision_rename(
         var_name: str,
         separator: Optional[str] = '.',
@@ -19,7 +26,6 @@ def collision_rename(
 
     :return: Renamed string.
     """
-
     new_var_name = var_name
     i = 0
 
@@ -30,6 +36,7 @@ def collision_rename(
         new_var_name = f"{var_name}{separator}{i}"
 
     return new_var_name
+
 
 def collision_rename_all(
         var_names: Iterable[str],
@@ -54,4 +61,3 @@ def collision_rename_all(
         var_name_set.add(var_name)
 
         yield var_name
-

@@ -164,6 +164,7 @@ class IntersectConfigLexer(object):
 
 class IntersectConfigParser(object):
     """Intersect configuration parser."""
+
     tokens: tuple[str]
     lexer: ply.lex.Lexer
     parser: ply.yacc.LRParser

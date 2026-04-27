@@ -4,9 +4,8 @@ __all__ = [
     'id_version_expr',
 ]
 
-from typing import Any
-
 import polars as pl
+
 
 def id_version_expr(
         id_col: str = 'id'
@@ -22,7 +21,6 @@ def id_version_expr(
 
     :returns: An expression for versioning variant IDs.
     """
-
     expr_id = pl.col(id_col).str.replace(r'\.[0-9]*$', '')
 
     expr_version = (

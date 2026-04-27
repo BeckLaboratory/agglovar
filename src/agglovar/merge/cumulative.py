@@ -35,6 +35,7 @@ from .base import (
     MergeBase
 )
 
+
 class LeadStrategy(Enum):
     """Strategy for choosing the lead variant.
 
@@ -42,8 +43,10 @@ class LeadStrategy(Enum):
     variant is chosen as the lead variant. The lead variant represents the merged records in the
     merged callset.
     """
+
     LEFT = 'left'
     FIRST = 'right'
+
 
 def _init_cumulative(
         df_next: pl.LazyFrame,
@@ -103,6 +106,7 @@ def _init_cumulative(
         .drop('_mg_src_index')
     )
 
+
 def _get_match(
         df_cumulative: pl.LazyFrame,
         df_join: pl.DataFrame,
@@ -110,6 +114,7 @@ def _get_match(
         src_name: str,
         merge_stat_cols: dict[str, pl.DataType]
 ) -> pl.LazyFrame:
+    """Update matching variants in the cumulative table with the next callset's join results."""
     return (  # Update matching variants
         df_cumulative
         .with_row_index('_index')
@@ -135,7 +140,7 @@ def _get_match(
             pl.col('_mg_stat').list.concat(
                 pl.struct(**{
                     col: pl.col(f'_mg_join_{col}').cast(dtype)
-                        for col, dtype in merge_stat_cols.items()
+                    for col, dtype in merge_stat_cols.items()
                 })
             )
         )
@@ -149,6 +154,7 @@ class MergeCumulative(MergeBase):
 
     :ivar join: Pairwise join strategy for intersects.
     """
+
     join: PairwiseJoin
 
     def __init__(
@@ -195,7 +201,10 @@ class MergeCumulative(MergeBase):
 
         for df_next, src_name, src_index in callsets:
             if missing_cols := required_cols - set(df_next.collect_schema().names()):
-                raise ValueError(f'Missing columns for source ({src_name}, index {src_index}): "{", ".join(sorted(missing_cols))}"')
+                raise ValueError(
+                    f'Missing columns for source ({src_name}, index {src_index}): '
+                    f'"{", ".join(sorted(missing_cols))}"'
+                )
 
             for col, dtype in df_next.collect_schema().items():
                 if col not in all_col_dict:
@@ -211,8 +220,11 @@ class MergeCumulative(MergeBase):
         for df_next, src_name, src_index in callsets:
             if df_cumulative is None:
                 merge_stat_cols = {  # Empty join, gets names of columns this join will return
-                    col: dtype for col, dtype in self.pairwise_join.join(df_next.head(0), df_next.head(0)).collect_schema().items()
-                        if col not in {'index_a', 'index_b', 'id_a', 'id_b'}
+                    col: dtype
+                    for col, dtype in (
+                        self.pairwise_join.join(df_next.head(0), df_next.head(0)).collect_schema().items()
+                    )
+                    if col not in {'index_a', 'index_b', 'id_a', 'id_b'}
                 }
 
                 df_cumulative = (
@@ -329,7 +341,7 @@ class MergeCumulative(MergeBase):
         if drop_filter:
             col_order = [col for col in col_order if col != 'filter']
 
-        for df_next, src_name, src_index in callsets:
+        for df_next, _src_name, src_index in callsets:
             df_next_cols = set(df_next.collect_schema().names())
 
             df_next = (
@@ -374,7 +386,6 @@ class MergeCumulative(MergeBase):
 
         if sort:
             df_merge = df_merge.sort('chrom', 'pos', 'end', 'id')
-
 
         return (
             df_merge

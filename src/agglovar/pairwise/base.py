@@ -19,8 +19,10 @@ from .weights import (
     DEFAULT_WEIGHT_STRATEGY,
 )
 
+
 class PairwiseJoin(ABC):
     """Base class for pairwise intersection classes."""
+
     _weight_strategy: WeightStrategy = CheckedObject(default=DEFAULT_WEIGHT_STRATEGY)
 
     def __init__(
@@ -94,7 +96,6 @@ class PairwiseJoin(ABC):
 
         :raises ValueError: If any expected columns are missing and `raise_exception` is True.
         """
-
         if isinstance(df, pl.LazyFrame):
             col_names = set(df.collect_schema().names())
         elif isinstance(df, pl.DataFrame):
@@ -133,7 +134,6 @@ class PairwiseJoin(ABC):
 
         :raises ValueError: If any reserved columns are found and `raise_exception` is True.
         """
-
         if isinstance(df, pl.LazyFrame):
             col_names = set(df.collect_schema().names())
         elif isinstance(df, pl.DataFrame):

@@ -8,8 +8,11 @@ __vcf_const_all__ = [
     'polars_to_vcf_type',
 ]
 
+from typing import Union
+
 import polars as pl
-from polars.type_aliases import PolarsDataType
+
+PolarsDataType = Union[pl.DataType, type[pl.DataType]]
 
 VCF_VERSION: str = '4.2'
 """VCF format version supported by agglovar."""
