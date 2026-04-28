@@ -9,6 +9,7 @@ __all__ = [
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Iterable
+from pathlib import Path
 
 import polars as pl
 
@@ -43,6 +44,7 @@ class PairwiseJoin(ABC):
             df_a: pl.DataFrame | pl.LazyFrame,
             df_b: pl.DataFrame | pl.LazyFrame,
             retain_index: bool = False,
+            temp_dir: bool | str | Path = False,
     ) -> Iterator[pl.LazyFrame]:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
@@ -50,6 +52,10 @@ class PairwiseJoin(ABC):
         :param df_b: Target dataframe.
         :param retain_index: If True, do not drop an existing "_index" column in callset tables
             if they exist.
+        :param temp_dir: How to materialise the prepared tables before the chunked loop.
+            ``False`` (default) collects both into memory; ``True`` writes them to the
+            system temp directory as parquet files; a ``str``/``Path`` writes them to
+            that directory. Temp files are always removed on exit.
 
         :yields: A LazyFrame for each chunk.
         """
@@ -60,6 +66,7 @@ class PairwiseJoin(ABC):
             df_a: pl.DataFrame | pl.LazyFrame,
             df_b: pl.DataFrame | pl.LazyFrame,
             retain_index: bool = False,
+            temp_dir: bool | str | Path = False,
     ) -> pl.LazyFrame:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
@@ -69,11 +76,12 @@ class PairwiseJoin(ABC):
         :param df_b: Table B.
         :param retain_index: If True, do not drop an existing "_index" column in callset tables
             if they exist.
+        :param temp_dir: See :meth:`join_iter`.
 
         :returns: A join table.
         """
         return pl.concat(
-            self.join_iter(df_a, df_b, retain_index=retain_index)
+            self.join_iter(df_a, df_b, retain_index=retain_index, temp_dir=temp_dir)
         )
 
     @property

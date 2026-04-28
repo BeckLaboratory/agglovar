@@ -151,10 +151,12 @@ def get_coord_cols(
         ))
 
         if len(col_names_tuple) != 3:
-            raise ValueError(f'Invalid cols: Expected 3 elements, found {len(col_names_tuple)}: {col_names:r}')
+            raise ValueError(
+                f'Invalid cols: Expected 3 elements, found {len(col_names_tuple)}: {col_names!r}'
+            )
 
         if any(col is None or col == '' for col in col_names_tuple):
-            raise ValueError(f'Columns is missing values: {col_names:r}')
+            raise ValueError(f'Columns is missing values: {col_names!r}')
 
         return CoordCol(*col_names_tuple)
 

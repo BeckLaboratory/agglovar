@@ -9,10 +9,9 @@ __all__ = [
 
 import warnings
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Generator, Optional, Union
 
 import polars as pl
-from polars.type_aliases import PolarsDataType
 
 import agglovar.schema as _agg_schema
 from agglovar.expr.variant import id_expr, sort_cols
@@ -21,6 +20,8 @@ from ._vcf_const import VCF_SAMPLE_FIXED_SCHEMA
 from ._vcf_header import VcfHeader, _number_to_polars_type, read_vcf_header
 
 import pysam
+
+PolarsDataType = Union[pl.DataType, type[pl.DataType]]
 
 
 # ---------------------------------------------------------------------------

@@ -8,12 +8,14 @@ __all__ = [
 
 import collections
 import operator
+from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
 import intervaltree
 import polars as pl
 
 from .col import CoordCol, get_coord_cols
+from ..util.lazy import materialize_pair
 
 CHUNK_SIZE: int = 2_500
 """Default size of join chunks. Breaks up tables into batches of this size or less."""
@@ -51,10 +53,10 @@ class _JoinResources:
         cols_b = set(df_b.collect_schema().keys())
 
         if '_index' not in cols_a:
-            df_a = df_a.with_row_index('_index')
+            df_a = df_a.with_row_index('_index').with_columns(pl.col('_index').cast(pl.UInt64))
 
         if '_index' not in cols_b:
-            df_b = df_b.with_row_index('_index')
+            df_b = df_b.with_row_index('_index').with_columns(pl.col('_index').cast(pl.UInt64))
 
         # Set column names
         ref_cols = get_coord_cols('ref')
@@ -104,6 +106,7 @@ def pairwise_join(
         chunk_size: int = CHUNK_SIZE,
         col_names_a: Optional[CoordCol | Iterable[str] | str] = None,
         col_names_b: Optional[CoordCol | Iterable[str] | str] = None,
+        temp_dir: bool | str | Path = False,
 ) -> pl.LazyFrame:
     """Join two tables.
 
@@ -124,20 +127,33 @@ def pairwise_join(
     :param chunk_size: Chunk tables by this size to limit the effects of combinatorial explosions.
     :param col_names_a: Columns to select from `df_a` if not None, otherwise, use object defaults.
     :param col_names_b: Columns to select from `df_b` if not None, otherwise, use object defaults.
+    :param temp_dir: How to materialise the prepared tables before the chunked loop.
+        ``False`` (default) collects both into memory; ``True`` writes them to the
+        system temp directory as parquet files; a ``str``/``Path`` writes them to
+        that directory. Temp files are always removed on exit.
 
     :return: A LazyFrame with the joined tables.
     """
-    # Do join
-    return pl.concat(_join_chunks(
-        _JoinResources(
-            df_a=df_a,
-            df_b=df_b,
-            distance=distance,
-            chunk_size=chunk_size,
-            col_names_a=col_names_a,
-            col_names_b=col_names_b,
-        )
-    ))
+    resources = _JoinResources(
+        df_a=df_a,
+        df_b=df_b,
+        distance=distance,
+        chunk_size=chunk_size,
+        col_names_a=col_names_a,
+        col_names_b=col_names_b,
+    )
+
+    with materialize_pair(
+        resources.df_a, resources.df_b, temp_dir, prefix='bed_join_prep_',
+    ) as (df_a_mat, df_b_mat):
+        resources.df_a = df_a_mat
+        resources.df_b = df_b_mat
+        chunks = list(_join_chunks(resources))
+
+    if not chunks:
+        return _empty_join(resources)
+
+    return pl.concat(chunks)
 
 
 def pairwise_join_iter(
@@ -147,19 +163,13 @@ def pairwise_join_iter(
         chunk_size: int = 5_000,
         col_names_a: Optional[CoordCol | Iterable[str] | str] = None,
         col_names_b: Optional[CoordCol | Iterable[str] | str] = None,
+        temp_dir: bool | str | Path = False,
 ) -> Iterator[pl.LazyFrame]:
-    """Join two tables.
+    """Join two tables, yielding one LazyFrame per chunk.
 
-    Returns a table with columns:
-
-        * index_a: Index in table a.
-        * index_b: Index in table b.
-        * chrom: Chromosome matched.
-        * pos: Start position of intersection.
-        * end: End position of intersection.
-        * distance: Distance between the two intervals with negative values representing overlapping intervals.
-
-    Note that if padding is greater than 0, the "pos" and "end" will have been modified to include padding.
+    Returns chunks with the same columns as :func:`pairwise_join`. At least one chunk
+    is always yielded; an empty schema-only frame is yielded when no chunk would otherwise
+    have been produced (so callers can safely call ``pl.concat`` on the result).
 
     :param df_a: Table a.
     :param df_b: Table b.
@@ -167,26 +177,86 @@ def pairwise_join_iter(
     :param chunk_size: Chunk tables by this size to limit the effects of combinatorial explosions.
     :param col_names_a: Columns to select from `df_a` if not None, otherwise, use object defaults.
     :param col_names_b: Columns to select from `df_b` if not None, otherwise, use object defaults.
+    :param temp_dir: How to materialise the prepared tables before the chunked loop.
+        See :func:`pairwise_join`.
 
-    :return: A LazyFrame with the joined tables.
+    :return: An iterator of LazyFrames.
     """
-    # Do join
-    return _join_chunks(
-        _JoinResources(
-            df_a=df_a,
-            df_b=df_b,
-            distance=distance,
-            chunk_size=chunk_size,
-            col_names_a=col_names_a,
-            col_names_b=col_names_b,
+    resources = _JoinResources(
+        df_a=df_a,
+        df_b=df_b,
+        distance=distance,
+        chunk_size=chunk_size,
+        col_names_a=col_names_a,
+        col_names_b=col_names_b,
+    )
+
+    with materialize_pair(
+        resources.df_a, resources.df_b, temp_dir, prefix='bed_join_prep_',
+    ) as (df_a_mat, df_b_mat):
+        resources.df_a = df_a_mat
+        resources.df_b = df_b_mat
+
+        yielded = False
+
+        for chunk in _join_chunks(resources):
+            yielded = True
+            yield chunk
+
+        if not yielded:
+            yield _empty_join(resources)
+
+
+def _build_join_pair(
+        df_a: pl.LazyFrame,
+        df_b: pl.LazyFrame,
+        distance: int,
+        col_a: CoordCol,
+        col_b: CoordCol,
+) -> pl.LazyFrame:
+    """Apply the cross-join, distance filter, and output projection.
+
+    Both ``df_a`` and ``df_b`` must already have ``_index_a``/``_index_b`` columns
+    and the coordinate columns named per ``col_a``/``col_b``. The output schema
+    is invariant across all callers.
+    """
+    return (
+        df_a
+        .join(df_b, left_on=col_a.chrom, right_on=col_b.chrom, how='inner')
+        .filter(
+            pl.col(col_b.pos) - distance <= pl.col(col_a.end),
+            pl.col(col_b.end) + distance >= pl.col(col_a.pos),
         )
+        .select(
+            pl.col('_index_a').alias('index_a'),
+            pl.col('_index_b').alias('index_b'),
+            pl.col(col_a.chrom).alias('chrom'),
+            pl.max_horizontal(col_a.pos, col_b.pos).alias('pos'),
+            pl.min_horizontal(col_a.end, col_b.end).alias('end'),
+        )
+        .with_columns(
+            pl.min_horizontal('pos', 'end').alias('pos'),
+            pl.max_horizontal('pos', 'end').alias('end'),
+            (pl.col('pos') - pl.col('end')).alias('distance'),
+        )
+    )
+
+
+def _empty_join(join_resources: _JoinResources) -> pl.LazyFrame:
+    """Schema-only LazyFrame for the empty-input case."""
+    return _build_join_pair(
+        join_resources.df_a.head(0),
+        join_resources.df_b.head(0),
+        join_resources.distance,
+        join_resources.col_a,
+        join_resources.col_b,
     )
 
 
 def _join_chunks(
         join_resources: _JoinResources
 ) -> Iterator[pl.LazyFrame]:
-    """Iterate over join results by chunks."""
+    """Iterate over join results by chunks. Yields nothing if no chunks have rows."""
     df_a = join_resources.df_a
     df_b = join_resources.df_b
     distance = join_resources.distance
@@ -194,12 +264,17 @@ def _join_chunks(
     col_a = join_resources.col_a
     col_b = join_resources.col_b
 
-    yield_count = 0
-
+    # Restrict the chrom loop to chroms present in both tables. Chroms unique to A
+    # would otherwise drive a full chunk loop whose B filter always returns empty.
     for chrom, last_index_a in (
         df_a
         .group_by(col_a.chrom)
         .agg(pl.len().alias('last_index'))
+        .join(
+            df_b.select(pl.col(col_b.chrom)).unique(),
+            left_on=col_a.chrom, right_on=col_b.chrom,
+            how='inner',
+        )
         .sort(col_a.chrom)
     ).collect().rows():
         start_index_a = 0
@@ -214,26 +289,32 @@ def _join_chunks(
 
             df_a_chunk = df_a_chrom.filter(
                 pl.col('_index_chrom_a') >= start_index_a,
-                pl.col('_index_chrom_a') < end_index_a
+                pl.col('_index_chrom_a') < end_index_a,
             )
 
-            end_max, pos_min = pl.collect_all([
-                df_a_chunk.select(pl.col(col_a.end).max()),
-                df_a_chunk.select(pl.col(col_a.pos).min()),
-            ])
-
-            end_max = end_max.item()
-            pos_min = pos_min.item()
+            end_max, pos_min = (
+                df_a_chunk
+                .select(
+                    pl.col(col_a.end).max().alias('end_max'),
+                    pl.col(col_a.pos).min().alias('pos_min'),
+                )
+                .collect()
+                .row(0)
+            )
 
             if end_max is None or pos_min is None:
                 start_index_a = end_index_a
                 continue
 
+            # Pre-filter df_b to records that could possibly match any A record in
+            # this chunk. The bounds use <= and >= to match the inner filter so
+            # boundary cases (touching, exact-overlap-at-negative-distance) are not
+            # silently dropped before they reach the inner join.
             df_b_chunk = (
                 df_b.filter(
                     pl.col(col_b.chrom) == chrom,
-                    pl.col(col_b.pos) - distance < end_max,
-                    pl.col(col_b.end) + distance > pos_min,
+                    pl.col(col_b.pos) - distance <= end_max,
+                    pl.col(col_b.end) + distance >= pos_min,
                 )
                 .with_row_index('_index_chunk_b')
             )
@@ -248,68 +329,20 @@ def _join_chunks(
             while start_index_b < last_index_b:
                 end_index_b = start_index_b + chunk_size
 
-                yield (
-                    df_a_chunk
-                    .join(
-                        df_b_chunk.filter(
-                            pl.col('_index_chunk_b') >= start_index_b,
-                            pl.col('_index_chunk_b') < end_index_b,
-                        ),
-                        left_on=col_a.chrom,
-                        right_on=col_b.chrom,
-                        how='inner',
-                    )
-                    .filter(
-                        pl.col(col_b.pos) - distance <= pl.col(col_a.end),
-                        pl.col(col_b.end) + distance >= pl.col(col_a.pos),
-                    )
-                    .select(
-                        pl.col('_index_a').alias('index_a'),
-                        pl.col('_index_b').alias('index_b'),
-                        pl.col(col_a.chrom).alias('chrom'),
-                        pl.max_horizontal(col_a.pos, col_b.pos).alias('pos'),
-                        pl.min_horizontal(col_a.end, col_b.end).alias('end'),
-                    )
-                    .with_columns(
-                        pl.min_horizontal('pos', 'end').alias('pos'),
-                        pl.max_horizontal('pos', 'end').alias('end'),
-                        (pl.col('pos') - pl.col('end')).alias('distance')
-                    )
+                yield _build_join_pair(
+                    df_a_chunk,
+                    df_b_chunk.filter(
+                        pl.col('_index_chunk_b') >= start_index_b,
+                        pl.col('_index_chunk_b') < end_index_b,
+                    ),
+                    distance,
+                    col_a,
+                    col_b,
                 ).collect().lazy()
 
                 start_index_b = end_index_b
 
-                yield_count += 1
-
             start_index_a = end_index_a
-
-    if yield_count == 0:
-        # Iterator should always return at least one chunk, even if empty. Prevents pl.concat from failing.
-        yield (
-            df_a.filter(False)
-            .join(
-                df_b.filter(False),
-                left_on=col_a.chrom,
-                right_on=col_b.chrom,
-                how='inner',
-            )
-            .filter(
-                pl.col(col_b.pos) - distance <= pl.col(col_a.end),
-                pl.col(col_b.end) + distance >= pl.col(col_a.pos),
-            )
-            .select(
-                pl.col('_index_a').alias('index_a'),
-                pl.col('_index_b').alias('index_b'),
-                pl.col(col_a.chrom).alias('chrom'),
-                pl.max_horizontal(col_a.pos, col_b.pos).alias('pos'),
-                pl.min_horizontal(col_a.end, col_b.end).alias('end'),
-            )
-            .with_columns(
-                pl.min_horizontal('pos', 'end').alias('pos'),
-                pl.max_horizontal('pos', 'end').alias('end'),
-                (pl.col('pos') - pl.col('end')).alias('distance')
-            )
-        ).collect().lazy()
 
 
 def pairwise_join_tree(
@@ -319,6 +352,7 @@ def pairwise_join_tree(
         chunk_size: int = CHUNK_SIZE,
         col_names_a: Optional[CoordCol | Iterable[str] | str] = None,
         col_names_b: Optional[CoordCol | Iterable[str] | str] = None,
+        temp_dir: bool | str | Path = False,
 ) -> pl.DataFrame:
     """Join two tables using an interval tree to load df_b into memory.
 
@@ -341,6 +375,7 @@ def pairwise_join_tree(
     :param chunk_size: Chunk tables by this size to limit the effects of combinatorial explosions.
     :param col_names_a: Columns to select from `df_a` if not None, otherwise, use object defaults.
     :param col_names_b: Columns to select from `df_b` if not None, otherwise, use object defaults.
+    :param temp_dir: How to materialise the prepared tables before iterating. See :func:`pairwise_join`.
 
     :return: A DataFrame with the joined tables.
     """
@@ -354,46 +389,65 @@ def pairwise_join_tree(
         col_names_b=col_names_b,
     )
 
-    df_a = join_resources.df_a
-    df_b = join_resources.df_b
     distance = join_resources.distance
     chunk_size = join_resources.chunk_size
     col_a = join_resources.col_a
     col_b = join_resources.col_b
 
-    # Load tree
-    itree = collections.defaultdict(intervaltree.IntervalTree)
+    match_list: list[tuple] = []
 
-    for df_batch_b in (
-        df_b
-        .select(pl.col('_index_b'), *col_b.exprs())
-        .collect_batches(chunk_size=chunk_size)
-    ):
-        for index_b, chrom_b, pos_b, end_b in df_batch_b.iter_rows():
-            itree[chrom_b].addi(pos_b - distance, end_b + distance, index_b)
+    with materialize_pair(
+        join_resources.df_a, join_resources.df_b, temp_dir, prefix='bed_join_tree_prep_',
+    ) as (df_a, df_b):
+        # Build the interval tree by storing each B record as ``(pos_b, end_b + 1)``.
+        # The +1 ensures zero-length records (``pos_b == end_b``) are not null intervals
+        # (``intervaltree`` rejects null intervals); the recovered ``end_b`` is
+        # ``interval.end - 1`` at query time. Distance is applied at query time so
+        # negative distances that would invert the stored interval do not lose B records.
+        itree = collections.defaultdict(intervaltree.IntervalTree)
 
-    # Intersect
-    match_list = []
+        for df_batch_b in (
+            df_b
+            .select(pl.col('_index_b'), *col_b.exprs())
+            .collect_batches(chunk_size=chunk_size)
+        ):
+            for index_b, chrom_b, pos_b, end_b in df_batch_b.iter_rows():
+                itree[chrom_b].addi(pos_b, end_b + 1, index_b)
 
-    for df_chunk in (
-        df_a
-        .select(pl.col('_index_a'), *col_a.exprs())
-        .collect_batches(chunk_size=chunk_size)
-    ):
-        for index_a, chrom_a, pos_a, end_a in df_chunk.iter_rows():
-            for interval in sorted(itree[chrom_a][pos_a:end_a], key=operator.attrgetter('data')):
+        # Query so the slice semantics ``begin < stop`` and ``end > start`` reproduce the
+        # ``pos_b - distance <= end_a`` and ``end_b + distance >= pos_a`` predicate used
+        # by the polars implementation:
+        #   begin < end_a + distance + 1  <=>  pos_b <= end_a + distance
+        #   end_b + 1 > pos_a - distance   <=>  end_b >= pos_a - distance
+        for df_chunk in (
+            df_a
+            .select(pl.col('_index_a'), *col_a.exprs())
+            .collect_batches(chunk_size=chunk_size)
+        ):
+            for index_a, chrom_a, pos_a, end_a in df_chunk.iter_rows():
+                q_start = pos_a - distance
+                q_end = end_a + distance + 1
 
-                pos = max(pos_a, interval.begin + distance)
-                end = min(end_a, interval.end - distance)
+                if q_end <= q_start:
+                    # Negative distance is more restrictive than the A interval's width:
+                    # no B record can satisfy the join filter for this A record.
+                    continue
 
-                match_list.append((
-                    index_a,  # index_a
-                    interval.data,  # index_b
-                    chrom_a,  # chrom
-                    min((pos, end)),  # pos
-                    max((pos, end)),  # end
-                    pos - end  # distance
-                ))
+                for interval in sorted(itree[chrom_a][q_start:q_end], key=operator.attrgetter('data')):
+                    pos_b = interval.begin
+                    end_b = interval.end - 1
+
+                    inter_pos = max(pos_a, pos_b)
+                    inter_end = min(end_a, end_b)
+
+                    match_list.append((
+                        index_a,
+                        interval.data,
+                        chrom_a,
+                        min((inter_pos, inter_end)),
+                        max((inter_pos, inter_end)),
+                        inter_pos - inter_end,
+                    ))
 
     return pl.DataFrame(
         match_list,

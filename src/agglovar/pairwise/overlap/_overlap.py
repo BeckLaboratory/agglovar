@@ -13,7 +13,6 @@ from collections.abc import (
 import functools
 import operator
 from pathlib import Path
-import tempfile
 from typing import (
     Any,
     Optional,
@@ -30,6 +29,7 @@ from ...meta.descriptors import (
     BoundedInt,
 )
 from ...seqmatch import MatchScoreModel
+from ...util.lazy import materialize_pair
 
 from ..base import PairwiseJoin
 from ..weights import (
@@ -66,11 +66,6 @@ class PairwiseOverlap(PairwiseJoin):
         subset df_b to include only variants that may overlap with variants in the chunk. If
         None, each chromosome is a single chunk, which will lead to a combinatorial explosion
         unless offset_max is greater than 0.
-    :ivar temp_dir: (Advanced) Controls how both prepared tables are materialised before the
-        chunked join loop to prevent repeated full-dataset scans. ``False`` (default) collects
-        both tables into memory. ``True`` writes them to the system temporary directory as
-        parquet files. A ``str`` or ``Path`` writes them to that directory. Temporary files are
-        always removed on exit, even if an error is raised.
     """
 
     # Advanced Configuration Attributes
@@ -78,7 +73,6 @@ class PairwiseOverlap(PairwiseJoin):
     force_end_ro: bool = CheckedBool()
     chunk_size: Optional[int] = BoundedInt(0, default=DEFAULT_CHUNK_SIZE)
     n_threads: Optional[int] = BoundedInt(1)
-    temp_dir: bool | str | Path
 
     # Join control
     stages: tuple[PairwiseOverlapStage, ...]
@@ -102,7 +96,6 @@ class PairwiseOverlap(PairwiseJoin):
             force_end_ro: bool = False,
             chunk_size: Optional[int] = None,
             n_threads: Optional[int] = None,
-            temp_dir: bool | str | Path = False,
     ) -> None:
         """Create a pairwise overlap join with the given stages and parameters."""
         super().__init__(weight_strategy)
@@ -123,7 +116,6 @@ class PairwiseOverlap(PairwiseJoin):
         self.chunk_size = chunk_size
         self._chunk_range = dict()
         self.n_threads = n_threads
-        self.temp_dir = temp_dir
 
         # match_prop expression: struct-based map_elements so both seq columns are accessible.
         # strategy='threading' runs each element in a separate Python thread. edlib is a C
@@ -217,6 +209,7 @@ class PairwiseOverlap(PairwiseJoin):
             df_a: pl.DataFrame | pl.LazyFrame,
             df_b: pl.DataFrame | pl.LazyFrame,
             retain_index: bool = False,
+            temp_dir: bool | str | Path = False,
     ) -> Iterator[pl.LazyFrame]:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
@@ -224,6 +217,10 @@ class PairwiseOverlap(PairwiseJoin):
         :param df_b: Target dataframe.
         :param retain_index: If True, do not drop an existing "_index" column in callset tables
             if they exist.
+        :param temp_dir: How to materialise the prepared tables before the chunked loop.
+            ``False`` (default) collects both into memory; ``True`` writes them to the
+            system temp directory as parquet files; a ``str``/``Path`` writes them to
+            that directory. Temp files are always removed on exit.
 
         :yields: A LazyFrame for each chunk.
         """
@@ -236,10 +233,7 @@ class PairwiseOverlap(PairwiseJoin):
         # Materialise both tables once before the chunked loop. with_row_index in _prepare_tables
         # blocks predicate pushdown into the parquet source, so every downstream collect would
         # otherwise trigger a full-dataset scan.
-        if self.temp_dir is False:
-            return self._join_iter_chunked(df_a.collect().lazy(), df_b.collect().lazy())
-
-        return self._join_iter_chunked_disk(df_a, df_b)
+        return self._join_iter_chunked_materialised(df_a, df_b, temp_dir)
 
     def _join_iter_chunked(
             self,
@@ -299,42 +293,24 @@ class PairwiseOverlap(PairwiseJoin):
             # once this generator exits.
             yield self._join_pairwise(df_a.head(0), df_b.head(0)).collect().lazy()
 
-    def _join_iter_chunked_disk(
+    def _join_iter_chunked_materialised(
             self,
             df_a: pl.LazyFrame,
             df_b: pl.LazyFrame,
+            temp_dir: bool | str | Path,
     ) -> Iterator[pl.LazyFrame]:
-        """Find all pairs of variants using disk-backed temp files for table materialisation.
-
-        Sinks prepared tables to temporary parquet files, then scans them for the chunked join.
-        Temp files are always removed on exit, even if an error is raised.
+        """Materialise the prepared tables once and run the chunked join.
 
         :param df_a: Source dataframe after `_prepare_tables()`.
         :param df_b: Target dataframe after `_prepare_tables()`.
+        :param temp_dir: Materialisation policy. See :meth:`join_iter`.
 
         :yields: A LazyFrame for each chunk.
         """
-        temp_dir_path = None if self.temp_dir is True else Path(self.temp_dir)
-
-        with tempfile.NamedTemporaryFile(
-            prefix='pairwise_overlap_prep_a_', suffix='.parquet',
-            dir=temp_dir_path, delete=False
-        ) as f:
-            path_a = Path(f.name)
-
-        with tempfile.NamedTemporaryFile(
-            prefix='pairwise_overlap_prep_b_', suffix='.parquet',
-            dir=temp_dir_path, delete=False
-        ) as f:
-            path_b = Path(f.name)
-
-        try:
-            df_a.sink_parquet(path_a)
-            df_b.sink_parquet(path_b)
-            yield from self._join_iter_chunked(pl.scan_parquet(path_a), pl.scan_parquet(path_b))
-        finally:
-            path_a.unlink(missing_ok=True)
-            path_b.unlink(missing_ok=True)
+        with materialize_pair(
+            df_a, df_b, temp_dir, prefix='pairwise_overlap_prep_',
+        ) as (df_a_mat, df_b_mat):
+            yield from self._join_iter_chunked(df_a_mat, df_b_mat)
 
     def _join_iter_notchunked(
             self,
@@ -1084,17 +1060,6 @@ class PairwiseOverlap(PairwiseJoin):
                     parsed_def['chunk_size'] = int(value)
                 except Exception as e:
                     raise ValueError(f'Error creating chunk_size: {e}') from e
-
-            elif key == 'temp_dir':
-                try:
-                    if isinstance(value, bool):
-                        parsed_def['temp_dir'] = value
-                    elif isinstance(value, Path):
-                        parsed_def['temp_dir'] = value
-                    else:
-                        parsed_def['temp_dir'] = str(value)
-                except Exception as e:
-                    raise ValueError(f'Error creating temp_dir: {e}') from e
 
         return cls(**parsed_def)
 
