@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-__vcf_read_all__ = [
+__all__ = [
     'VcfBatch',
     'iter_vcf',
 ]
 
 import warnings
 from pathlib import Path
-from typing import Generator, Optional, Union
+from typing import Generator, Optional
 
 import polars as pl
 from polars.type_aliases import PolarsDataType
@@ -21,8 +21,6 @@ from ._vcf_const import VCF_SAMPLE_FIXED_SCHEMA
 from ._vcf_header import VcfHeader, _number_to_polars_type, read_vcf_header
 
 import pysam
-
-PolarsDataType = Union[pl.DataType, type[pl.DataType]]
 
 
 # ---------------------------------------------------------------------------

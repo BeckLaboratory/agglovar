@@ -1,6 +1,6 @@
 """Constants for parsing and writing VCF files."""
 
-__vcf_const_all__ = [
+__all__ = [
     'VCF_VERSION',
     'VCF_SOURCE',
     'VCF_TO_POLARS_TYPE',

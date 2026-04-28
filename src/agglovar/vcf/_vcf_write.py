@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__vcf_write_all__ = [
+__all__ = [
     'write_vcf',
 ]
 

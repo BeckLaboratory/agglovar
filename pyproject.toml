@@ -108,6 +108,8 @@ max-line-length = 120
 max-line-length = 120
 docstring-convention = "pep257"
 per-file-ignores = [
-    "src/agglovar/join/config/parser.py: D200, D205, D212, D300, D403, D415"
+    "src/agglovar/merge/config/parser.py: D200, D205, D212, D300, D400, D401, D403, D415",
+    "src/agglovar/vcf/__init__.py: DALL002, F401, F403",
+    "src/agglovar/pairwise/overlap/__init__.py: DALL002, F401, F403",
 ]
-rst-roles = ["class", "meth", "const", "ref", "func", "mod"]
+rst-roles = ["class", "meth", "const", "ref", "func", "mod", "attr", "data"]

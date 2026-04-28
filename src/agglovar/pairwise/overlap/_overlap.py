@@ -463,7 +463,7 @@ class PairwiseOverlap(PairwiseJoin):
             retain_index: bool = False,
             warn_on_reserved: bool = False,
     ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
-        """Prepares tables for join.
+        """Prepare tables for join.
 
         Checks for expected columns and formats, adds missing columns as needed, and
         appends "_a" and "_b" suffixes to column names.

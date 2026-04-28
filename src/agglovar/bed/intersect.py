@@ -13,6 +13,7 @@ __all__ = [
     'as_proportion',
 ]
 
+
 def as_bool(
         df_a: pl.LazyFrame | pl.DataFrame,
         df_b: pl.LazyFrame | pl.DataFrame,

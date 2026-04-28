@@ -32,10 +32,6 @@ CallsetDefType: TypeAlias = (
 class MergeBase(ABC):
     """Base class for callset intersects."""
 
-    def __init__(self) -> None:
-        """Initialize this base."""
-        pass
-
     @abstractmethod
     def __call__(
             self,
@@ -86,7 +82,6 @@ class MergeBase(ABC):
         """
         name_set = set()
         callset_table: pl.LazyFrame
-        callset_name_pre: Any
 
         callset_tuple_list: list[tuple[pl.LazyFrame, str, int]] = []
 
@@ -124,7 +119,10 @@ class MergeBase(ABC):
                     callset_name = str(callset[1])
 
                 else:
-                    raise ValueError(f'Callset at index {i}: Input callsets must be a sequence of one or two elements: Received {len(callset)}')
+                    raise ValueError(
+                        f'Callset at index {i}: '
+                        f'Input callsets must be a sequence of one or two elements: Received {len(callset)}'
+                    )
 
             if not isinstance(callset_table, (pl.LazyFrame, pl.DataFrame)):
                 raise ValueError(f'Callset at index {i}: First element Polars table: Received {type(callset_table)}')

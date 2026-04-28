@@ -83,7 +83,7 @@ class AutoInitBase(ABC, Generic[T]):
 
     @abstractmethod
     def non_optional_default(self) -> T:
-        """Called to get a default value when the parameter is not optional and the default is None."""
+        """Get a default value when the parameter is not optional and the default is None."""
         raise NotImplementedError
 
     def __init_subclass__(cls, **kwargs) -> None:
@@ -366,7 +366,9 @@ class BoundedInt(AutoInitBase[int]):
             raise ValueError(f'Attribute {self.name_pub}: Value out of range "{self.range_str}": {value:,g}')
 
         if not self.allow_truncation and value != float(org_value):
-            raise ValueError(f'Attribute {self.name_pub}: Value must be an integer (truncation detected): {org_value!r}')
+            raise ValueError(
+                f'Attribute {self.name_pub}: Value must be an integer (truncation detected): {org_value!r}'
+            )
 
         super().__set__(obj, value)
 

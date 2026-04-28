@@ -30,9 +30,9 @@ def lockable(
         immutable: bool = False,
         var_name: str = '_lock',
 ):
-    """Decorator to make a class lockable.
+    """Make a class lockable so that it is immutable while locked.
 
-    Creates a lock variable that can be checked to see if the object is locked. Semantics of what "locked" means is
+    # Creates a lock variable that can be checked to see if the object is locked. Semantics of what "locked" means is
     defined by the class using this decorator. If "attrs" is `True`, then object attributes cannot be modified while
     the object is locked. If "immutable" is `True`, then object attributes cannot be modified at any time.
 
@@ -128,7 +128,7 @@ def lockable(
         cls.__init__ = new_init
 
     def lock(self):
-        """Lock the object to prevent further modifications"""
+        """Lock the object to prevent further modifications."""
         object.__setattr__(self, var_name, True)
 
     cls.lock = lock
@@ -153,14 +153,14 @@ def lockable(
 
     if reversible:
         def unlock(self):
-            """Unlock the object to allow further modifications"""
+            """Unlock the object to allow further modifications."""
             object.__setattr__(self, var_name, False)
 
         cls.unlock = unlock
 
     @property
     def is_locked(self):
-        """Check if object is locked"""
+        """Check if object is locked."""
         return getattr(self, var_name)
 
     cls.is_locked = is_locked
@@ -169,7 +169,7 @@ def lockable(
 
 
 def immutable(cls=None):
-    """Decorator to make a class immutable after __init__ completes."""
+    """Make a class immutable after __init__ completes."""
     # Handle @immutable() syntax
     if cls is None:
         return lambda cls: immutable(cls)

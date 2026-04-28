@@ -35,7 +35,8 @@ def dotplot(
     Configuration items:
 
     * label_x, label_y: Axis labels (default "Sequence", and "Reference")
-    * start_x, start_y: Start position along each axis. Should be the first base position in the extracted region (Default 0).
+    * start_x, start_y: Start position along each axis. Should be the first base position in the
+      extracted region (Default 0).
     * linewidth: Width of the lines (default 1)
     * plot_width, plot_height, plot_dpi: Plot dimensions (default 7, 7, 300)
     * invert_y: Invert the y axis (default False)
@@ -86,7 +87,9 @@ def dotplot(
         elif color.lower() in {'forward', 'fwd'}:
             color = ('black', 'red')
         else:
-            raise ValueError(f'Argument color is a string: Must be "reverse" or "rev" or a tuple of two colors: {color}')
+            raise ValueError(
+                f'Argument color is a string: Must be "reverse" or "rev" or a tuple of two colors: {color}'
+            )
 
     elif isinstance(color, (list, tuple)):
         if len(color) != 2:

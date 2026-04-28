@@ -359,7 +359,7 @@ class WeightElement(Container[WeightColumn]):
         return sum(column.weight if column.weight < 0.0 else 0.0 for column in self.columns)
 
     def __contains__(self, item: object) -> bool:
-        """Determines if a column is in this element."""
+        """Return True if a column is in this element."""
         return item in self.columns
 
     def __eq__(self, other: object) -> bool:
@@ -370,7 +370,7 @@ class WeightElement(Container[WeightColumn]):
         return self.columns == other.columns and self.missing == other.missing
 
     def __repr__(self) -> str:
-        """Return a string representation of this weight element."""
+        """Get a string representation of this weight element."""
         return f'WeightElement(columns={self.columns!r}, missing={self.missing!r})'
 
 
@@ -457,7 +457,7 @@ class WeightStrategy(Container[WeightElement]):
         )
 
     def __repr__(self) -> str:
-        """String representation."""
+        """Get a string representation."""
         return f'WeightStrategy(elements={self.elements!r}, missing={self.missing!r}, priority={self.priority!r})'
 
 

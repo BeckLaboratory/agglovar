@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__vcf_header_all__ = [
+__all__ = [
     'ContigHeader',
     'InfoHeader',
     'FilterHeader',
@@ -732,9 +732,9 @@ class VcfHeader:
     # ------------------------------------------------------------------ representations
 
     def __str__(self) -> str:
-        """Return the complete VCF header as a string.
+        r"""Return the complete VCF header as a string.
 
-        Each line ends with ``\\n``, including the column-header line, so the result can
+        Each line ends with ``\n``, including the column-header line, so the result can
         be written directly to a file with ``file.write(str(hdr))``.
         """
         lines: list[str] = []
@@ -803,7 +803,6 @@ class VcfHeader:
                 )
 
 
-('chrom', 'pos', 'end', 'id', 'vartype', 'varlen', 'seq')
 # --- Header reader ---
 
 
