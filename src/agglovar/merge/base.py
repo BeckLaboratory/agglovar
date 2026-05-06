@@ -7,6 +7,7 @@ __all__ = [
 
 from abc import ABC, abstractmethod
 from collections.abc import Container, Iterable
+from pathlib import Path
 from typing import (
     Any,
     Optional,
@@ -38,6 +39,7 @@ class MergeBase(ABC):
             callsets: Iterable[CallsetDefType],
             retain_index: bool = False,
             pre_filter: Optional[Iterable[pl.Expr]] = None,
+            temp_dir: bool | str | Path = False,
     ) -> pl.LazyFrame:
         """
         Intersect callsets.
@@ -46,6 +48,10 @@ class MergeBase(ABC):
         :param retain_index: If `True`, do not drop an existing "_index" column if it exists.
         :param pre_filter: If set, filter each table with these expressions. Filter is applied
             last (after "_index" is set).
+        :param temp_dir: How the underlying pairwise intersect materialises prepared tables before
+            its chunked loop. ``False`` (default) keeps tables in memory; ``True`` writes them to
+            the system temp directory as parquet; a ``str``/``Path`` writes them to that directory.
+            Temp files are always removed on exit.
 
         :return: A merged callset table.
         """

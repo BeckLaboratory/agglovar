@@ -21,6 +21,7 @@ __all__ = [
 
 from collections.abc import Iterable
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 import polars as pl
@@ -178,6 +179,7 @@ class MergeCumulative(MergeBase):
             pre_filter: Optional[Iterable[pl.Expr] | pl.Expr] = None,
             sort: bool = True,
             add_id: bool = True,
+            temp_dir: bool | str | Path = False,
     ) -> pl.LazyFrame:
         """
         Intersect callsets.
@@ -187,6 +189,8 @@ class MergeCumulative(MergeBase):
             if they exist.
         :param pre_filter: If set, filter each table with these expressions. Filter is applied
             last (after "_index" is set).
+        :param temp_dir: Forwarded to the pairwise intersect for each cumulative step. See
+            :meth:`agglovar.pairwise.base.PairwiseJoin.join_iter`.
 
         :return: A merged callset table.
         """
@@ -239,7 +243,7 @@ class MergeCumulative(MergeBase):
             # Intersect
             df_join = (
                 (
-                    self.pairwise_join.join(df_cumulative, df_next)
+                    self.pairwise_join.join(df_cumulative, df_next, temp_dir=temp_dir)
                     .sort('weight', descending=True)
                     .unique('index_a', keep='first')
                     .unique('index_b', keep='first')

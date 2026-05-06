@@ -1,9 +1,9 @@
 """Unit tests for ``agglovar.bed.join``.
 
-Tests run all three implementations (``pairwise_join``,
-``pairwise_join_iter``, ``pairwise_join_tree``) against the brute-force
-oracle in :mod:`tests.bed.oracle`. Each is parametrized over the discovered
-datasets and over both directions (A→B and B→A).
+Tests run both implementations (``pairwise_join`` and ``pairwise_join_iter``)
+against the brute-force oracle in :mod:`tests.bed.oracle`. Each is
+parametrized over the discovered datasets and over both directions (A→B and
+B→A).
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import pytest
 from agglovar.bed.join import (
     pairwise_join,
     pairwise_join_iter,
-    pairwise_join_tree,
 )
 
 from tests.bed.oracle import (
@@ -35,14 +34,9 @@ def _join_via_collect(df_a, df_b, **kwargs) -> pl.DataFrame:
     return pairwise_join(df_a, df_b, **kwargs).collect()
 
 
-def _join_via_tree(df_a, df_b, **kwargs) -> pl.DataFrame:
-    return pairwise_join_tree(df_a, df_b, **kwargs)
-
-
 ALL_IMPLS: tuple[tuple[str, Callable], ...] = (
     ('pairwise_join', _join_via_collect),
     ('pairwise_join_iter', _join_via_iter),
-    ('pairwise_join_tree', _join_via_tree),
 )
 
 ALL_IMPL_PARAMS = [pytest.param(name, fn, id=name) for name, fn in ALL_IMPLS]
@@ -352,16 +346,6 @@ class TestPairwiseJoinTempDir:
     ) -> None:
         for mode in (False, True, tmp_path):
             assert _pairs(_join_via_iter(df_a, df_b, temp_dir=mode)) == expected_pairs
-
-    def test_tree_temp_dir_modes_match(
-            self, df_a: pl.DataFrame, df_b: pl.DataFrame,
-            tmp_path: Path,
-    ) -> None:
-        a = df_a.filter(pl.col('end') > pl.col('pos'))  # tree skipped earlier on zero-len; now ok
-        b = df_b.filter(pl.col('end') > pl.col('pos'))
-        baseline = _pairs(pairwise_join_tree(a, b, temp_dir=False))
-        assert _pairs(pairwise_join_tree(a, b, temp_dir=True)) == baseline
-        assert _pairs(pairwise_join_tree(a, b, temp_dir=tmp_path)) == baseline
 
     def test_explicit_path_does_not_leave_files(
             self, df_a: pl.DataFrame, df_b: pl.DataFrame,

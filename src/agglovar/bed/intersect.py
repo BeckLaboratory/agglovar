@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 
 import polars as pl
 
-from .join import pairwise_join_tree, pairwise_join_iter
+from .join import pairwise_join, pairwise_join_iter
 from .merge import merge_depth
 from .col import CoordCol, get_coord_cols
 
@@ -153,7 +153,7 @@ def as_proportion(
         .collect()
     )
 
-    df_join = pairwise_join_tree(
+    df_join = pairwise_join(
         df_a=df_a_clean,
         df_b=df_b_nr,
         col_names_a=col_names_a,

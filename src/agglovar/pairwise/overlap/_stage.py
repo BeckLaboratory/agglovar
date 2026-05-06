@@ -100,7 +100,10 @@ class PairwiseOverlapStage():
         chunk_range_dict: dict[tuple[str, str], list[pl.Expr]] = {}
 
         if self.ro_min is not None:
-            join_predicates_list.append(EXPR_OVERLAP_RO >= self.ro_min)
+            if self.ro_min > 0.0:
+                join_predicates_list.append(EXPR_OVERLAP_RO >= self.ro_min)
+            else:
+                join_predicates_list.append(EXPR_OVERLAP_RO > self.ro_min)
 
             self._append_chunk_range(
                 'pos_b', 'max',
@@ -124,7 +127,7 @@ class PairwiseOverlapStage():
         # When both are set, use the more permissive (smaller k) so no valid match is excluded;
         # the exact SZRO/RO filters above will reject any pair that fails the stricter check.
         _k_varlen: Optional[float] = None
-        if self.ro_min is not None:
+        if self.ro_min is not None and self.ro_min > 0.0:
             _k_varlen = self.ro_min
         if self.size_ro_min is not None:
             _k_varlen = self.size_ro_min if _k_varlen is None else min(_k_varlen, self.size_ro_min)

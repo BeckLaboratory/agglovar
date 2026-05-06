@@ -133,9 +133,7 @@ CASES: tuple[Case, ...] = (
         name='chr_touch',
         description=(
             'BED half-open touching cases: B.pos == A.end and B.end == A.pos. '
-            'Behaviour at distance=0 differs between pairwise_join_iter '
-            '(includes touching, output distance=0) and pairwise_join_tree '
-            '(intervaltree excludes touching). See review issue B8.'
+            'At distance=0, touching pairs are included with output distance=0.'
         ),
         a=(
             (100, 200),
