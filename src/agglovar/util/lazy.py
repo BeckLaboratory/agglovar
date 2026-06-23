@@ -27,10 +27,30 @@ __all__ = [
 
 from contextlib import contextmanager
 from pathlib import Path
+import re
 import tempfile
 from typing import Iterator
 
 import polars as pl
+
+
+_SCAN_TOKEN = re.compile(r'\bSCAN\b')
+
+
+def _is_in_memory(lf: pl.LazyFrame) -> bool:
+    """Best-effort check that a LazyFrame's source is already an in-memory DataFrame.
+
+    Inspects the unoptimised plan for any ``SCAN`` node — if none is found, the source is a
+    materialised DataFrame and ``sink_parquet`` would just round-trip already-in-memory data
+    to disk. False positives degrade to today's behaviour (an extra sink+scan); false
+    negatives have not been observed but would cause an unnecessary ``collect()`` of an
+    in-memory frame, which is cheap.
+    """
+    try:
+        plan = lf.explain(optimized=False)
+    except Exception:
+        return False
+    return _SCAN_TOKEN.search(plan) is None
 
 
 @contextmanager
@@ -42,11 +62,15 @@ def materialize_pair(
 ) -> Iterator[tuple[pl.LazyFrame, pl.LazyFrame]]:
     """Yield ``(df_a, df_b)`` materialised once according to ``temp_dir``.
 
+    When ``temp_dir`` is truthy, frames whose plan source is already an in-memory DataFrame
+    skip the parquet round-trip and are collected in place — the ``temp_dir`` policy still
+    applies to disk-backed scans (parquet, csv, …) which actually benefit from spilling.
+
     :param df_a: First lazy table.
     :param df_b: Second lazy table.
     :param temp_dir: Materialisation policy. See module docstring.
     :param prefix: Filename prefix used for temp parquet files (only when
-        ``temp_dir`` is truthy).
+        ``temp_dir`` is truthy and the frame is disk-backed).
 
     :yields: A pair of ``LazyFrame`` instances backed by the materialised data.
     """
@@ -56,20 +80,25 @@ def materialize_pair(
 
     temp_dir_path = None if temp_dir is True else Path(temp_dir)
 
-    with tempfile.NamedTemporaryFile(
-        prefix=f'{prefix}a_', suffix='.parquet', dir=temp_dir_path, delete=False,
-    ) as f:
-        path_a = Path(f.name)
-
-    with tempfile.NamedTemporaryFile(
-        prefix=f'{prefix}b_', suffix='.parquet', dir=temp_dir_path, delete=False,
-    ) as f:
-        path_b = Path(f.name)
+    paths: list[Path] = []
+    materialised: list[pl.LazyFrame] = []
 
     try:
-        df_a.sink_parquet(path_a)
-        df_b.sink_parquet(path_b)
-        yield pl.scan_parquet(path_a), pl.scan_parquet(path_b)
+        for df, suffix in ((df_a, 'a'), (df_b, 'b')):
+            if _is_in_memory(df):
+                materialised.append(df.collect().lazy())
+                continue
+
+            with tempfile.NamedTemporaryFile(
+                prefix=f'{prefix}{suffix}_', suffix='.parquet', dir=temp_dir_path, delete=False,
+            ) as f:
+                path = Path(f.name)
+
+            paths.append(path)
+            df.sink_parquet(path)
+            materialised.append(pl.scan_parquet(path))
+
+        yield materialised[0], materialised[1]
     finally:
-        path_a.unlink(missing_ok=True)
-        path_b.unlink(missing_ok=True)
+        for path in paths:
+            path.unlink(missing_ok=True)

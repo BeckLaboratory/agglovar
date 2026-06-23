@@ -165,9 +165,16 @@ def df_exp(
     with_exprs = list()
 
     if ro_min is not None:
-        filters.append(
-            pl.col('ro') >= ro_min
-        )
+        # ro_min == 0.0 means "any overlap" (strictly positive RO), matching the join, which
+        # excludes non-overlapping pairs.  Any other value is an inclusive lower bound.
+        if ro_min == 0.0:
+            filters.append(
+                pl.col('ro') > 0.0
+            )
+        else:
+            filters.append(
+                pl.col('ro') >= ro_min
+            )
 
     if offset_max is not None:
         filters.append(
@@ -197,6 +204,12 @@ def df_exp(
         df_exp_all
         .filter(*filters)
         .with_columns(*with_exprs)
+        # The join appends a "weight" column derived from the default weight strategy.  Compute it
+        # here from the (already validated) stat columns, after match_prop has been resolved above
+        # so a missing match_prop is reflected in the weight exactly as the join does.
+        .with_columns(
+            agglovar.pairwise.weights.DEFAULT_WEIGHT_STRATEGY.expr.cast(pl.Float32).alias('weight')
+        )
     )
 
 @pytest.fixture(scope='class')
@@ -227,19 +240,25 @@ def df_join(
     :return: Actual join records.
     """
 
-    return agglovar.join.pair.join(
-        **{
-            key: val for key, val in locals().items() if val is not None and key not in {'vartype'}
-        }
+    stage_kwargs = {
+        key: val
+        for key, val in {
+            'ro_min': ro_min,
+            'offset_max': offset_max,
+            'size_ro_min': size_ro_min,
+            'offset_prop_max': offset_prop_max,
+            'match_prop_min': match_prop_min,
+            'match_ref': match_ref,
+            'match_alt': match_alt,
+        }.items()
+        if val is not None
+    }
 
-        # ro_min=ro_min,
-        # offset_max=offset_max,
-        # size_ro_min=size_ro_min,
-        # offset_prop_max=offset_prop_max,
-        # match_prop_min=match_prop_min,
-        # match_ref=match_ref,
-        # match_alt=match_alt
-    ).collect()
+    overlap = agglovar.pairwise.overlap.PairwiseOverlap(
+        stages=[agglovar.pairwise.overlap.PairwiseOverlapStage(**stage_kwargs)]
+    )
+
+    return overlap.join(df_a, df_b).collect()
 
 
 #
