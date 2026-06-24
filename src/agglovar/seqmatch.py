@@ -266,7 +266,7 @@ class MatchScoreModel:
             return _jaccard_distance(seq_a, seq_b, self.jaccard_kmer)
 
         else:
-            return 1 if seq_a.upper() == seq_b.upper() else 0
+            return 1.0 if seq_a.upper() == seq_b.upper() else 0.0
 
 
 def _get_kmer_count(
