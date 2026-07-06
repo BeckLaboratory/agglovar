@@ -1,7 +1,4 @@
-"""Base class for callset intersects.
-
-
-"""
+"""Base class for callset intersects."""
 
 __all__ = [
     'CallsetDef',
@@ -42,15 +39,19 @@ class CallsetDef(NamedTuple):
     :ivar name: The name of the callset within a collection of callsets.
     :ivar metadata: The metadata of the callset or None if no metadata is provided.
     """
+
     table: pl.LazyFrame
     name: str
     metadata: Optional[str]
 
     def __str__(self) -> str:
+        """Return a string representation of the callset definition."""
         return self.name
 
     def __repr__(self) -> str:
+        """Return a string representation of the callset definition."""
         return f'CallsetDef(table={self.table!r}, name={self.name}, metadata={self.metadata})'
+
 
 CallsetDefInputType: TypeAlias = (
     pl.DataFrame
@@ -58,11 +59,11 @@ CallsetDefInputType: TypeAlias = (
     | tuple[
         pl.DataFrame | pl.LazyFrame,
     ]
-    | tuple [
+    | tuple[
         pl.DataFrame | pl.LazyFrame,
         Optional[str],
     ]
-    | tuple [
+    | tuple[
         pl.DataFrame | pl.LazyFrame,
         Optional[str],
         Optional[str | dict],
@@ -90,7 +91,6 @@ def _get_definition(
 
     :return: A callset definition.
     """
-
     # Get callset table and name
     callset_name = None
     callset_meta = None
@@ -109,8 +109,8 @@ def _get_definition(
     elif isinstance(callset_def, tuple):
         if len(callset_def) < 1:
             raise ValueError(
-                f'Callset must be a Polars table or an iterable '
-                f'of callset definition elements (table, name, metadata): Received an empty iterable'
+                'Callset must be a Polars table or an iterable '
+                'of callset definition elements (table, name, metadata): Received an empty iterable'
             )
 
         if isinstance(callset_def[0], pl.LazyFrame):
@@ -170,8 +170,10 @@ def _get_definition(
             )
             .cast(pl.String)
             .fill_null(
-                pl.concat_str(pl.lit('var'),
-                pl.col('_mg_src_index')),
+                pl.concat_str(
+                    pl.lit('var'),
+                    pl.col('_mg_src_index')
+                ),
             )
             .alias('id')
         )
@@ -186,8 +188,7 @@ def _get_definition(
         table=callset_table,
         name=callset_name,
         metadata=callset_meta,
-   )
-
+    )
 
 
 @lockable
@@ -253,7 +254,6 @@ class MergeBase(ABC):
         :return: A list of :class:`CallsetDef`, one per input source, in input order.
         """
         name_set = set()
-        callset_table: pl.LazyFrame
 
         callset_tuple_list: list[CallsetDef] = []
 
@@ -299,7 +299,7 @@ def _get_name(
     :returns: A name for this input source.
     """
     if name is None:
-        name = f'source.1'
+        name = 'source.1'
 
     name = collision_rename(str(name), '.', *args)
 

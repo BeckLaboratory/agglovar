@@ -117,7 +117,6 @@ class PairwiseOverlap(PairwiseJoin):
 
         # Chunking control
         self.chunk_size = chunk_size
-        self._chunk_range = dict()
         self.n_threads = n_threads
 
         # match_prop expression: struct-based map_elements so both seq columns are accessible.
@@ -253,13 +252,15 @@ class PairwiseOverlap(PairwiseJoin):
         logger.debug('Starting join (chunked)...')
 
         # Per-chunk timing/size logging is gated on DEBUG so an INFO-level run pays nothing: the
-        # extra df_b_filtered collect and the position-range/counts are only computed when the
-        # log record would actually be emitted.
+        # per-stage df_b row counts and the position-range are only computed when the log record
+        # would actually be emitted.
         debug = logger.isEnabledFor(logging.DEBUG)
 
         join_empty = True
 
-        chunk_range = self._get_chunk_range()
+        # Per-stage chunk-range dicts are static (derived from each stage's own two-sided bounds),
+        # so build them once. Each stage filters df_b with its own bounds inside _join_pairwise.
+        stage_ranges = [self._stage_chunk_range_dict(stage) for stage in self.stages]
         chunk_size = self.chunk_size if self.chunk_size is not None else DEFAULT_CHUNK_SIZE
 
         for chrom, last_index_a in (
@@ -273,6 +274,15 @@ class PairwiseOverlap(PairwiseJoin):
             df_a_chrom = (
                 df_a.filter(pl.col('chrom_a') == chrom)
                 .with_row_index('_index_chrom_a')
+                .collect()
+                .lazy()
+            )
+
+            # Collect this chromosome's df_b once into memory so the per-stage relative filters are
+            # lazy views over an in-memory frame rather than re-scanning the (possibly temp-parquet)
+            # df_b once per stage per chunk. Symmetric with the df_a_chrom collect above.
+            df_b_chrom = (
+                df_b.filter(pl.col('chrom_b') == chrom)
                 .collect()
                 .lazy()
             )
@@ -292,37 +302,36 @@ class PairwiseOverlap(PairwiseJoin):
                 ).collect()
                 df_a_chunk = df_a_chunk_df.lazy()
 
-                df_b_filtered = self._chunk_relative(df_a_chunk, df_b, chrom, chunk_range)
+                diag = {'n_b': []} if debug else None
 
                 if debug:
-                    # Collect df_b_filtered once and reuse it for both the row count and the
-                    # join (this replaces, not adds to, the scan the join would do anyway).
-                    df_b_filtered_df = df_b_filtered.collect()
-                    n_b = df_b_filtered_df.height
-
                     t0 = time.perf_counter()
-                    df_join = self._join_pairwise(df_a_chunk, df_b_filtered_df.lazy()).collect()
+                    df_join = self._join_pairwise(
+                        df_a_chunk, df_b_chrom, stage_ranges=stage_ranges, diag=diag,
+                    ).collect()
                     dt = time.perf_counter() - t0
 
-                    # pos range of the df_a chunk: if chunks are not position-local, the relative
-                    # df_b filter cannot prune and n_b stays near the full-chromosome count.
+                    # n_b is now per stage: with two-sided bounds the offset stage collapses to a
+                    # small local window instead of scaling with the chunk's max position. pos_a is
+                    # the chunk's position span (relevant to whether chunks are position-local).
                     logger.debug(
-                        'Join chunk: chrom %s [%d:%d] pos_a=%s-%s n_a=%d n_b=%d pairs=%d in %.3fs'
+                        'Join chunk: chrom %s [%d:%d] pos_a=%s-%s n_a=%d n_b=%s pairs=%d in %.3fs'
                         % (chrom, start_index_a, end_index_a,
                            df_a_chunk_df['pos_a'].min(), df_a_chunk_df['pos_a'].max(),
-                           df_a_chunk_df.height, n_b, df_join.height, dt)
+                           df_a_chunk_df.height, diag['n_b'], df_join.height, dt)
                     )
 
                     chrom_chunks += 1
                     chrom_pairs += df_join.height
                     chrom_join_s += dt
-                    if n_b > chrom_b_max:
-                        chrom_b_max = n_b
+                    chunk_b_max = max(diag['n_b'], default=0)
+                    if chunk_b_max > chrom_b_max:
+                        chrom_b_max = chunk_b_max
 
                     yield df_join.lazy()
                 else:
                     yield (
-                        self._join_pairwise(df_a_chunk, df_b_filtered)
+                        self._join_pairwise(df_a_chunk, df_b_chrom, stage_ranges=stage_ranges)
                         .collect()
                         .lazy()
                     )
@@ -342,7 +351,8 @@ class PairwiseOverlap(PairwiseJoin):
             # Yield an empty frame with the correct schema so pl.concat never sees an empty list.
             # Collect so the yielded LazyFrame does not reference df_a/df_b — they may be
             # scan_parquet nodes over temp files that _join_iter_chunked_disk will unlink
-            # once this generator exits.
+            # once this generator exits. stage_ranges is left as None (no relative filter needed
+            # for an empty frame).
             yield self._join_pairwise(df_a.head(0), df_b.head(0)).collect().lazy()
 
     def _join_iter_chunked_materialised(
@@ -402,20 +412,39 @@ class PairwiseOverlap(PairwiseJoin):
             self,
             df_a: pl.LazyFrame,
             df_b: pl.LazyFrame,
+            stage_ranges: Optional[list[dict[tuple[str, str], list[pl.Expr]]]] = None,
+            diag: Optional[dict] = None,
     ) -> pl.LazyFrame:
         """Non-equi-join (pos and end not the same).
 
         Assumes both tables are filtered to the same chromosome.
+
+        :param df_a: Source chunk table.
+        :param df_b: Target table (chromosome-sliced when ``stage_ranges`` is given).
+        :param stage_ranges: Per-stage chunk-range dicts, one per stage in ``self.stages``. When
+            given, each stage filters ``df_b`` with its own two-sided bounds (see
+            :meth:`_chunk_relative`) before the join. When ``None``, every stage joins ``df_b``
+            unchanged — the behavior used by the non-chunked path and the empty-schema guard.
+        :param diag: Optional DEBUG collector. If not ``None``, ``diag['n_b']`` is appended with the
+            per-stage filtered df_b row count.
         """
         join_list = []
 
-        for stage in self.stages:
+        for stage_idx, stage in enumerate(self.stages):
+            if stage_ranges is not None:
+                df_b_stage = self._chunk_relative(df_a, df_b, stage_ranges[stage_idx])
+            else:
+                df_b_stage = df_b
+
+            if diag is not None:
+                diag['n_b'].append(df_b_stage.select(pl.len()).collect().item())
+
             all_predicates = (*self.equi_join_exprs, *stage.join_predicates)
 
             if all_predicates:
-                df_join = df_a.join_where(df_b, *all_predicates)
+                df_join = df_a.join_where(df_b_stage, *all_predicates)
             else:
-                df_join = df_a.join(df_b, how='cross')
+                df_join = df_a.join(df_b_stage, how='cross')
 
             df_join = df_join.select(
                 *self.join_col_exprs,
@@ -427,7 +456,7 @@ class PairwiseOverlap(PairwiseJoin):
                 )
 
             if self.compute_seg_ro:
-                df_join = self._seg_ro(df_join, df_a, df_b)
+                df_join = self._seg_ro(df_join, df_a, df_b_stage)
 
             df_join = (
                 df_join
@@ -447,44 +476,28 @@ class PairwiseOverlap(PairwiseJoin):
             # .sort('index_a', 'index_b')
         )
 
-    def _get_chunk_range(self) -> dict[tuple[str, str], list[pl.Expr]]:
-        """Get a dict of chunk ranges including each column and a limit.
+    @staticmethod
+    def _stage_chunk_range_dict(
+            stage: PairwiseOverlapStage,
+    ) -> dict[tuple[str, str], list[pl.Expr]]:
+        """Flatten one stage's ``chunk_range`` into the dict form ``_chunk_relative`` expects.
 
-        Only (col, limit) pairs contributed by every stage with a non-empty chunk_range are
-        retained. If any stage has no constraint on a dimension the union of stages is unbounded
-        in that dimension, so the filter must be dropped to avoid incorrectly excluding df_b
-        records that would match an unconstrained stage.
+        Each stage carries its own two-sided position/length bounds as ``(col, limit, exprs)``
+        tuples. These are collected here per stage — with no cross-stage intersection — so that
+        every stage chunks df_b with exactly its own necessary-condition bounds. A stage with an
+        empty ``chunk_range`` yields an empty dict, which leaves df_b unfiltered for that stage
+        (an unconstrained stage must not be pruned).
+
+        :param stage: Stage whose chunk range is flattened.
+
+        :returns: Mapping of ``(col, limit)`` to the list of df_a expressions bounding that limit.
         """
-        stages_with_range = [stage for stage in self.stages if stage.chunk_range]
-        n_stages = len(stages_with_range)
-
-        if n_stages == 0:
-            return {}
-
-        contribution_count: dict[tuple[str, str], int] = {}
         chunk_range: dict[tuple[str, str], list[pl.Expr]] = {}
 
-        for stage in stages_with_range:
-            contributed: set[tuple[str, str]] = set()
+        for col, limit, exprs in stage.chunk_range:
+            chunk_range.setdefault((col, limit), []).extend(exprs)
 
-            for col, limit, exprs in stage.chunk_range:
-                key = (col, limit)
-
-                if key not in chunk_range:
-                    chunk_range[key] = []
-                    contribution_count[key] = 0
-
-                chunk_range[key].extend(exprs)
-
-                if key not in contributed:
-                    contribution_count[key] += 1
-                    contributed.add(key)
-
-        return {
-            key: exprs
-            for key, exprs in chunk_range.items()
-            if contribution_count[key] == n_stages
-        }
+        return chunk_range
 
     def _prepare_tables(
             self,
@@ -840,14 +853,13 @@ class PairwiseOverlap(PairwiseJoin):
             self,
             df_a: pl.LazyFrame,
             df_b: pl.LazyFrame,
-            chrom: str,
             chunk_range: dict[tuple[str, str], list[pl.Expr]],
     ) -> pl.LazyFrame:
         """Chunk one DataFrame relative to another.
 
         Chunk df_b relative to df_a choosing records in df_b that could possibly be joined with some record in df_a.
         For example, this function may determine the minimum and maximum values of pos and end, and then subset df_b
-        by those values. The actual subset values are determined by the `chunk_range` attribute.
+        by those values. The actual subset values are determined by the `chunk_range` argument.
 
         `chunk_range` is a dictionary with keys formatted as ('column', 'limit') where "column" is a column name and
         "limit" is "min" or "max". Each value is a list of expressions to be applied to df_a, which will then determine
@@ -863,15 +875,16 @@ class PairwiseOverlap(PairwiseJoin):
         used as a limit, the maximum value of pos_b is based on the maximum value of end_a (i.e. "chunk_range['pos',
         'max']" will contain "pl.col('end_a')" because if pos_b greater than any "end_a", then variants cannot overlap.
 
+        `df_b` is expected to be already sliced to the relevant chromosome, so no chromosome filter is applied here.
+        With an empty `chunk_range` (an unconstrained stage), df_b is returned unfiltered.
+
         :param df_a: Table chunk.
         :param df_b: Table to be chunked to records that may overlap with df_a.
-        :param chrom: Chromosome name.
+        :param chunk_range: Per-stage bounds (see :meth:`_stage_chunk_range_dict`).
 
         :returns: df_b partitioned (LazyFrame).
         """
-        filter_list = [
-            pl.col('chrom_b') == chrom
-        ]
+        filter_list: list[pl.Expr] = []
 
         for (col_name, limit), expr_list in chunk_range.items():
             if limit == 'min':
@@ -900,6 +913,9 @@ class PairwiseOverlap(PairwiseJoin):
 
             else:
                 raise ValueError(f'Unknown limit: "{limit}"')
+
+        if not filter_list:
+            return df_b
 
         return df_b.filter(*filter_list)
 

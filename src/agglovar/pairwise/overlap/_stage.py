@@ -100,6 +100,14 @@ class PairwiseOverlapStage():
         self.seg_ro_min = seg_ro_min
         self.match_prop_min = match_prop_min
 
+        # match_prop <= SZRO, so match_prop_min imposes SZRO >= match_prop_min as a necessary
+        # condition. Raise size_ro_min to that bound (documented behavior) so join_where prunes
+        # guaranteed-fail pairs before the costly per-pair match_prop alignment runs. A stricter
+        # user-supplied size_ro_min is left intact.
+        if self.match_prop_min is not None and self.match_prop_min > 0.0:
+            if self.size_ro_min is None or self.size_ro_min < self.match_prop_min:
+                self.size_ro_min = self.match_prop_min
+
         # Set join control containers
         join_predicates_list: list[pl.Expr] = []
         pre_select_filters_list: list[pl.Expr] = []

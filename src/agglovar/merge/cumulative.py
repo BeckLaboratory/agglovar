@@ -18,8 +18,10 @@ row-append per iteration. The public list columns (``mg_src``, ``mg_stat``) and 
 index are materialized once at finalization via a single ``group_by(_mg_index).agg(...)``. Each
 ``mg_src`` entry carries ``src_index``, ``src_name``, ``src_meta``, ``var_index``, and ``var_id``;
 ``mg_src_lead`` is the position within ``mg_src`` of the lead (representative) source entry.
-The cumulative variant table (``df_cumulative``) keeps chrom-sorted ordering across iterations via
-``merge_sorted(key='chrom')`` to avoid the per-iteration O(N log N) global sort.
+The cumulative variant table (``df_cumulative``) keeps ``(chrom, pos)`` ordering across iterations
+via ``merge_sorted`` on a composite ``_mg_sort`` key (``rank(chrom) * pos_mult + pos``) to avoid the
+per-iteration O(N log N) global sort. Position-sorted ordering within each chromosome keeps the
+pairwise join's row-index chunks position-local so its per-stage df_b filter can prune on both sides.
 """
 
 __all__ = [
@@ -77,7 +79,6 @@ def _ensure_chrom_sorted(
 
     :return: ``df`` itself if already chrom-sorted, otherwise a sorted copy.
     """
-
     if isinstance(df, pl.LazyFrame):
         df = df.collect()
 
@@ -85,6 +86,63 @@ def _ensure_chrom_sorted(
         return df
 
     return df.sort('chrom').set_sorted('chrom')
+
+
+def _ensure_mg_sorted(
+        df: pl.DataFrame | pl.LazyFrame
+) -> pl.DataFrame:
+    """Ensure ``df`` is sorted on the ``_mg_sort`` composite key with ``SORTED_ASC`` set.
+
+    ``_mg_sort`` encodes ``(chrom, pos)`` as a single ascending integer so a single-key
+    ``merge_sorted`` keeps the cumulative table ordered by ``(chrom, pos)`` (not merely by
+    ``chrom``). Keeping the table position-sorted within each chromosome is what makes the
+    pairwise join's row-index chunks position-local, so the per-stage df_b filter can prune on
+    both sides. Like :func:`_ensure_chrom_sorted`, this is the invariant choke point for
+    ``merge_sorted``; if the flag is already set the call is a no-op aside from the check.
+
+    :param df: A DataFrame containing a ``_mg_sort`` column.
+
+    :return: ``df`` itself if already sorted on ``_mg_sort``, otherwise a sorted copy.
+    """
+    if isinstance(df, pl.LazyFrame):
+        df = df.collect()
+
+    if df.height == 0 or df['_mg_sort'].flags.get('SORTED_ASC', False):
+        return df
+
+    return df.sort('_mg_sort').set_sorted('_mg_sort')
+
+
+def _ensure_varlen(
+        df: pl.DataFrame | pl.LazyFrame,
+        varlen_dtype: Optional[pl.DataType],
+) -> pl.DataFrame | pl.LazyFrame:
+    """Ensure ``df`` carries a ``varlen`` column so the merge preserves the source length.
+
+    ``varlen`` is optional in inputs and is regenerated as ``end - pos`` by the pairwise join when
+    absent. That derivation is correct for reference-spanning types (e.g. deletions) but wrong for
+    insertions, where ``end`` is ``pos + 1`` rather than ``pos + varlen``. So when a source provides
+    ``varlen`` it must be preserved through the cumulative table, not recomputed. This function only
+    supplies ``varlen`` for sources that omit it (from the reference span), leaving present values
+    untouched; it is a no-op when no source carries ``varlen`` (``varlen_dtype`` is ``None``).
+
+    :param df: A callset table with ``pos`` and ``end`` columns.
+    :param varlen_dtype: The ``varlen`` dtype to match, or ``None`` if no source provides ``varlen``.
+
+    :return: ``df`` unchanged if ``varlen`` is present or not carried, otherwise a copy with
+        ``varlen`` derived from the reference span.
+    """
+    if varlen_dtype is None:
+        return df
+
+    columns = df.collect_schema().names() if isinstance(df, pl.LazyFrame) else df.columns
+
+    if 'varlen' in columns:
+        return df
+
+    return df.with_columns(
+        (pl.col('end') - pl.col('pos')).abs().cast(varlen_dtype).alias('varlen')
+    )
 
 
 @immutable
@@ -134,7 +192,7 @@ class MergeCumulative(MergeBase):
         """
         callsets: list[CallsetDef] = self.get_intersect_tuples(callsets, retain_index, pre_filter)
 
-        logger.debug(f'Intersecting %d callsets' % len(callsets))
+        logger.debug('Intersecting %d callsets' % len(callsets))
 
         if len(callsets) == 0:
             raise ValueError('No callsets to intersect.')
@@ -156,31 +214,58 @@ class MergeCumulative(MergeBase):
                 if col not in all_col_dict:
                     all_col_dict[col] = dtype
 
-        logger.debug(f'Columns: %s' % all_col_dict)
+        logger.debug('Columns: %s' % all_col_dict)
 
         # Columns carried on the cumulative table — preserve discovery order. Includes the
         # pairwise join's required columns plus "id" (needed for the cumulative sort and join
-        # reporting), via the local "required_cols" superset.
+        # reporting), via the local "required_cols" superset. "varlen" is also carried when any
+        # source provides it: it is autogen (recomputed as end - pos when absent), but that
+        # recomputation is wrong for insertions (end is pos + 1, not pos + varlen), so the original
+        # length must be preserved on the cumulative table rather than regenerated in the join.
+        varlen_dtype = all_col_dict.get('varlen')
+
         pairwise_cols = [
-            col for col in all_col_dict.keys() if col in required_cols
+            col for col in all_col_dict.keys() if col in required_cols or col == 'varlen'
         ]
 
-        logger.debug(f'Pairwise columns: %s' % pairwise_cols)
+        logger.debug('Pairwise columns: %s' % pairwise_cols)
 
-        # Materialize each callset once (chrom-sorted). Source LazyFrames are not
-        # re-evaluated in the merge loop or the final lead-extraction pass.
+        # Materialize each callset once (chrom-sorted, varlen ensured). Source LazyFrames are not
+        # re-evaluated in the merge loop or the final lead-extraction pass. _ensure_varlen keeps the
+        # carried "varlen" consistent across sources so those that omit it do not break selection.
 
         logger.debug('Materializing callsets...')
 
         callsets_mat: list[dict[str, Any]] = [
             {
-                'table': _ensure_chrom_sorted(callset_def.table),
+                'table': _ensure_chrom_sorted(_ensure_varlen(callset_def.table, varlen_dtype)),
                 'name': callset_def.name,
                 'metadata': callset_def.metadata,
             } for callset_def in callsets
         ]
 
         logger.debug('Done materializing callsets.')
+
+        # Composite (chrom, pos) sort key. merge_sorted takes a single key column, so encode the
+        # chromosome rank and position into one ascending integer: rank(chrom) * pos_mult + pos.
+        # This keeps df_cumulative sorted by (chrom, pos) across iterations in O(N+M) per step
+        # (no per-iteration global sort), which the pairwise join relies on for position-local
+        # row-index chunks. chrom_rank follows lexical chromosome order (matching the callset
+        # chrom sort); pos_mult exceeds every position so chromosome boundaries dominate the key.
+        all_chroms = sorted(set().union(*(
+            set(callset_mat['table']['chrom'].unique().to_list())
+            for callset_mat in callsets_mat
+        )))
+        chrom_rank = {chrom: rank for rank, chrom in enumerate(all_chroms)}
+        pos_mult = max(
+            (callset_mat['table']['pos'].max() or 0)
+            for callset_mat in callsets_mat
+        ) + 1
+
+        mg_sort_expr = (
+            pl.col('chrom').replace_strict(chrom_rank, return_dtype=pl.Int64) * pos_mult
+            + pl.col('pos')
+        ).alias('_mg_sort')
 
         # Derive merge_stat_cols (the per-pair stats schema from the pairwise join) once, using
         # an empty pairwise call. Polars short-circuits on empty inputs so this is cheap.
@@ -225,7 +310,8 @@ class MergeCumulative(MergeBase):
                 pl.int_range(0, pl.len(), dtype=pl.UInt64).alias('_mg_index')
             )
             .sort('chrom', 'pos', 'end', 'id')
-            .with_columns(pl.col('chrom').set_sorted())
+            .with_columns(mg_sort_expr)
+            .with_columns(pl.col('_mg_sort').set_sorted())
         )
 
         df_sources = df_first.select(
@@ -325,7 +411,11 @@ class MergeCumulative(MergeBase):
                     (pl.int_range(0, pl.len(), dtype=pl.UInt64) + next_mg_index).alias('_mg_index')
                 )
 
-                df_new_cumulative = df_new_with_index.select(*pairwise_cols, '_mg_index')
+                df_new_cumulative = (
+                    df_new_with_index
+                    .select(*pairwise_cols, '_mg_index')
+                    .with_columns(mg_sort_expr)
+                )
 
                 df_new_sources = df_new_with_index.select(
                     pl.col('_mg_index'),
@@ -338,20 +428,23 @@ class MergeCumulative(MergeBase):
                     pl.lit(None, dtype=stat_struct_dtype).alias('_mg_stat'),
                 ).select(*sources_schema.names())
 
-                # Item 3: merge_sorted on chrom — O(N+M) vs full sort's O((N+M) log (N+M)).
-                # Both sides must carry the SORTED_ASC flag, or merge_sorted will silently
-                # produce an interleaved-but-unsorted result. _ensure_chrom_sorted is the
-                # invariant choke point.
-                df_cumulative = _ensure_chrom_sorted(df_cumulative)
-                df_new_cumulative = _ensure_chrom_sorted(df_new_cumulative)
+                # merge_sorted on the (chrom, pos) composite key — O(N+M) vs a full sort's
+                # O((N+M) log (N+M)) — keeps df_cumulative position-sorted within each chromosome.
+                # Both sides must carry the SORTED_ASC flag on _mg_sort, or merge_sorted will
+                # silently produce an interleaved-but-unsorted result. df_cumulative stays sorted
+                # from the prior merge_sorted; df_new_cumulative is freshly sorted here (the new
+                # source is chrom-sorted but not position-sorted within chromosome).
+                # maintain_order keeps existing cumulative rows ahead of new rows on ties.
+                df_cumulative = _ensure_mg_sorted(df_cumulative)
+                df_new_cumulative = _ensure_mg_sorted(df_new_cumulative)
 
-                _assert_chrom_sorted(df_cumulative, 'df_cumulative')
-                _assert_chrom_sorted(df_new_cumulative, 'df_new_cumulative')
+                _assert_mg_sorted(df_cumulative, 'df_cumulative')
+                _assert_mg_sorted(df_new_cumulative, 'df_new_cumulative')
 
                 df_cumulative = (
                     df_cumulative
-                    .merge_sorted(df_new_cumulative, key='chrom')
-                    .with_columns(pl.col('chrom').set_sorted())
+                    .merge_sorted(df_new_cumulative, key='_mg_sort', maintain_order=True)
+                    .with_columns(pl.col('_mg_sort').set_sorted())
                 )
 
                 df_sources = pl.concat([df_sources, df_match_sources, df_new_sources])
@@ -383,7 +476,6 @@ class MergeCumulative(MergeBase):
         index (the position of the lead entry within ``mg_src``), then joins lead variant
         columns from the materialised callsets.
         """
-
         logger.debug('Finalizing...')
 
         # "mg_src_lead" is the index into the "mg_src" list identifying the lead source entry.
@@ -511,8 +603,8 @@ class MergeCumulative(MergeBase):
         )
 
 
-def _assert_chrom_sorted(df: pl.DataFrame, name: str) -> None:
-    """Raise if ``df`` does not carry the ``chrom`` SORTED_ASC flag.
+def _assert_mg_sorted(df: pl.DataFrame, name: str) -> None:
+    """Raise if ``df`` does not carry the ``_mg_sort`` SORTED_ASC flag.
 
     ``merge_sorted`` does not validate that its inputs are actually sorted on the merge key —
     if either side has lost the flag (e.g. a join scrambled order without us noticing), the
@@ -520,9 +612,9 @@ def _assert_chrom_sorted(df: pl.DataFrame, name: str) -> None:
     """
     if df.height == 0:
         return
-    if not df['chrom'].flags.get('SORTED_ASC', False):
+    if not df['_mg_sort'].flags.get('SORTED_ASC', False):
         raise AssertionError(
-            f'{name}: chrom column missing SORTED_ASC flag — merge_sorted would silently '
+            f'{name}: _mg_sort column missing SORTED_ASC flag — merge_sorted would silently '
             f'produce incorrect output. This indicates a transformation upstream stripped '
             f'the sorted invariant without re-establishing it via sort()/set_sorted().'
         )
