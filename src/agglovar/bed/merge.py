@@ -4,11 +4,21 @@ __all__ = [
     'merge_depth',
 ]
 
-from typing import Optional, Iterable
+import logging
+from typing import (
+    Optional,
+    Iterable,
+)
 
 import polars as pl
 
-from .col import CoordCol, get_coord_cols, make_unique_col
+from .col import (
+    CoordCol,
+    get_coord_cols,
+    make_unique_col,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def merge_depth(

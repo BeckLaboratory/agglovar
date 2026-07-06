@@ -8,9 +8,12 @@ __all__ = [
     'polars_to_vcf_type',
 ]
 
+import logging
 from typing import Union
 
 import polars as pl
+
+logger = logging.getLogger(__name__)
 
 PolarsDataType = Union[pl.DataType, type[pl.DataType]]
 

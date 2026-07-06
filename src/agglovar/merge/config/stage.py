@@ -19,14 +19,23 @@ __all__ = [
 
 from abc import ABCMeta
 from dataclasses import dataclass
+import logging
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Optional, Mapping
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Optional,
+    Mapping,
+)
 
 from ...align import score
 from ...seqmatch import MatchScoreModel
 
 if TYPE_CHECKING:
     from .strategy import IntersectStrategy
+
+
+logger = logging.getLogger(__name__)
 
 
 RESERVED_PARAM_NAMES: frozenset[str] = frozenset({

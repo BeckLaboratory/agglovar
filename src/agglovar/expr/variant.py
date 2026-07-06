@@ -9,9 +9,12 @@ __all__ = [
     'lead_src_expr',
 ]
 
+import logging
 from typing import Optional
 
 import polars as pl
+
+logger = logging.getLogger(__name__)
 
 id_snv_expr = (
     pl.concat_str(

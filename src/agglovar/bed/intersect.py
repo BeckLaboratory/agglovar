@@ -1,18 +1,30 @@
 """Table intersects."""
 
+import logging
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import (
+    Iterable,
+    Optional,
+)
 
 import polars as pl
 
-from .join import pairwise_join, pairwise_join_iter
+from .col import (
+    CoordCol,
+    get_coord_cols,
+)
+from .join import (
+    pairwise_join,
+    pairwise_join_iter,
+)
 from .merge import merge_depth
-from .col import CoordCol, get_coord_cols
 
 __all__ = [
     'as_bool',
     'as_proportion',
 ]
+
+logger = logging.getLogger(__name__)
 
 
 def as_bool(

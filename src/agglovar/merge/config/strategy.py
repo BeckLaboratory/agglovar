@@ -11,11 +11,20 @@ __all__ = [
 # IntersectConfig (full configuration specification)
 #
 
+import logging
 import re
 from typing import Optional
 
 from .parser import IntersectConfigParser
-from .stage import IntersectStage, IntersectStageMatch, IntersectStageRo, IntersectStageDistance, IntersectStageExact
+from .stage import (
+    IntersectStage,
+    IntersectStageMatch,
+    IntersectStageRo,
+    IntersectStageDistance,
+    IntersectStageExact,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class IntersectStrategy(object):

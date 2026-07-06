@@ -4,7 +4,11 @@ __all__ = [
     'id_version_expr',
 ]
 
+import logging
+
 import polars as pl
+
+logger = logging.getLogger(__name__)
 
 
 def id_version_expr(

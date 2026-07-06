@@ -29,3 +29,9 @@ from . import schema
 from . import seqmatch
 from . import vcf
 from . import util
+
+
+# Configure logging
+
+import logging
+logging.getLogger(__name__).addHandler(logging.NullHandler())

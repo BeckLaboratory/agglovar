@@ -5,13 +5,24 @@ __all__ = [
     'pairwise_join_iter',
 ]
 
+import logging
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import (
+    Iterable,
+    Iterator,
+    Optional,
+)
 
 import polars as pl
 
-from .col import CoordCol, get_coord_cols
 from ..util.lazy import materialize_pair
+
+from .col import (
+    CoordCol,
+    get_coord_cols,
+)
+
+logger = logging.getLogger(__name__)
 
 CHUNK_SIZE: int = 2_500
 """Default size of join chunks. Breaks up tables into batches of this size or less."""

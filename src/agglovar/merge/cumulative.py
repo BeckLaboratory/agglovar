@@ -29,20 +29,26 @@ __all__ = [
 
 from collections.abc import Iterable
 from enum import Enum
+import logging
 from pathlib import Path
-from typing import Optional, Any
+from typing import (
+    Optional,
+    Any,
+)
 
 import polars as pl
 
-from ..pairwise.base import PairwiseJoin
 from ..meta.decorators import immutable
+from ..pairwise.base import PairwiseJoin
 from ..util.var import id_version_expr
 
 from .base import (
     CallsetDefInputType,
     CallsetDef,
-    MergeBase
+    MergeBase,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class LeadStrategy(Enum):
@@ -128,6 +134,8 @@ class MergeCumulative(MergeBase):
         """
         callsets: list[CallsetDef] = self.get_intersect_tuples(callsets, retain_index, pre_filter)
 
+        logger.debug(f'Intersecting %d callsets' % len(callsets))
+
         if len(callsets) == 0:
             raise ValueError('No callsets to intersect.')
 
@@ -148,6 +156,8 @@ class MergeCumulative(MergeBase):
                 if col not in all_col_dict:
                     all_col_dict[col] = dtype
 
+        logger.debug(f'Columns: %s' % all_col_dict)
+
         # Columns carried on the cumulative table — preserve discovery order. Includes the
         # pairwise join's required columns plus "id" (needed for the cumulative sort and join
         # reporting), via the local "required_cols" superset.
@@ -155,8 +165,13 @@ class MergeCumulative(MergeBase):
             col for col in all_col_dict.keys() if col in required_cols
         ]
 
+        logger.debug(f'Pairwise columns: %s' % pairwise_cols)
+
         # Materialize each callset once (chrom-sorted). Source LazyFrames are not
         # re-evaluated in the merge loop or the final lead-extraction pass.
+
+        logger.debug('Materializing callsets...')
+
         callsets_mat: list[dict[str, Any]] = [
             {
                 'table': _ensure_chrom_sorted(callset_def.table),
@@ -165,8 +180,12 @@ class MergeCumulative(MergeBase):
             } for callset_def in callsets
         ]
 
+        logger.debug('Done materializing callsets.')
+
         # Derive merge_stat_cols (the per-pair stats schema from the pairwise join) once, using
         # an empty pairwise call. Polars short-circuits on empty inputs so this is cheap.
+        logger.debug('Preparing first caller: %s' % callsets_mat[0]['name'])
+
         first_df = callsets_mat[0]['table']
 
         merge_stat_cols: dict[str, pl.DataType] = {
@@ -192,11 +211,12 @@ class MergeCumulative(MergeBase):
             '_mg_stat': stat_struct_dtype,
         })
 
-        # Initialise cumulative tables from the first callset.
-        df_first = callsets_mat[0]['table']
-        first_src_name = callsets_mat[0]['name']
-        first_src_meta = callsets_mat[0]['metadata']
-        first_src_index = 0
+        # Initialize cumulative tables from the first callset.
+        iter_idx = 0
+        callset_mat = callsets_mat[0]
+        df_first = callset_mat['table']
+
+        logger.debug('Merge source %d: Merging "%s"' % (iter_idx, callset_mat['name']))
 
         df_cumulative = (
             df_first
@@ -214,16 +234,20 @@ class MergeCumulative(MergeBase):
             pl.col('pos').cast(pl.Int64).alias('src_pos'),
         ).with_columns(
             pl.int_range(0, pl.len(), dtype=pl.UInt64).alias('_mg_index'),
-            pl.lit(first_src_index, dtype=pl.Int32).alias('_mg_src_order'),
-            pl.lit(first_src_name, dtype=pl.String).alias('src_name'),
-            pl.lit(first_src_meta, dtype=pl.String).alias('src_meta'),
+            pl.lit(iter_idx, dtype=pl.Int32).alias('_mg_src_order'),
+            pl.lit(callset_mat['name'], dtype=pl.String).alias('src_name'),
+            pl.lit(callset_mat['metadata'], dtype=pl.String).alias('src_meta'),
             pl.lit(None, dtype=stat_struct_dtype).alias('_mg_stat'),
         ).select(*sources_schema.names())
 
         next_mg_index: int = df_first.height
 
+        logger.debug('Merge source %d: Cumulative size %s' % (iter_idx, f'{df_cumulative.height:,}'))
+
         # Iterate remaining callsets.
         for iter_idx, callset_mat in enumerate(callsets_mat[1:], start=1):
+            logger.debug('Merge source %d: Merging "%s"' % (iter_idx, callset_mat['name']))
+
             df_join = (
                 self.pairwise_join.join(df_cumulative.lazy(), callset_mat['table'].lazy(), temp_dir=temp_dir)
                 .sort('weight', descending=True)
@@ -234,6 +258,8 @@ class MergeCumulative(MergeBase):
 
             # Resolve positional indices (item 4): lookup _mg_index from cumulative and
             # (_mg_src_index, id, pos) from df_next — single small in-memory join each.
+            logger.debug('Merge source %d: Resolving positional indices...' % iter_idx)
+
             df_join_resolved = (
                 df_join.lazy()
                 .join(
@@ -257,6 +283,8 @@ class MergeCumulative(MergeBase):
             )
 
             # Append source rows for matched pairs (items 1+2: long-form append, no list mutation).
+            logger.debug('Merge source %d: Appending source rows...' % iter_idx)
+
             stat_struct_expr = (
                 pl.struct(*[
                     pl.col(col).cast(dtype).alias(col)
@@ -279,6 +307,8 @@ class MergeCumulative(MergeBase):
             ).select(*sources_schema.names())
 
             # df_new: rows in df_next not matched (anti-join preserves left order → chrom-sorted).
+            logger.debug('Merge source %d: Anti-joining new records...' % iter_idx)
+
             df_new = (
                 callset_mat['table'].lazy()
                 .join(
@@ -329,6 +359,8 @@ class MergeCumulative(MergeBase):
             else:
                 df_sources = pl.concat([df_sources, df_match_sources])
 
+            logger.debug('Merge source %d: Cumulative size %s' % (iter_idx, f'{df_cumulative.height:,}'))
+
         return self._finalize(
             df_sources=df_sources,
             callsets_mat=callsets_mat,
@@ -351,6 +383,9 @@ class MergeCumulative(MergeBase):
         index (the position of the lead entry within ``mg_src``), then joins lead variant
         columns from the materialised callsets.
         """
+
+        logger.debug('Finalizing...')
+
         # "mg_src_lead" is the index into the "mg_src" list identifying the lead source entry.
         # It is computed FROM the materialised lists (not a separate argmin over the long-form
         # rows), so it cannot drift from "mg_src" regardless of how the list is ordered. A lead
@@ -410,9 +445,12 @@ class MergeCumulative(MergeBase):
             col_order = [col for col in col_order if col != 'filter']
 
         # Lead-variant column extraction (item 6): read from already-materialised callsets.
+        logger.debug('Finalizing: Extracting lead columns...')
+
         lead_list: list[pl.LazyFrame] = []
 
         for src_index, callset_mat in enumerate(callsets_mat):
+
             df_next_cols = set(callset_mat['table'].columns)
 
             df_next_lead = (
@@ -442,6 +480,8 @@ class MergeCumulative(MergeBase):
 
             lead_list.append(df_next_lead)
 
+        logger.debug('Finalizing: Concat lead columns...')
+
         df_merge = (
             pl.concat(lead_list)
             .join(
@@ -451,15 +491,19 @@ class MergeCumulative(MergeBase):
         )
 
         if add_id:
+            logger.debug('Finalizing: Adding ID...')
             df_merge = df_merge.with_columns(id_version_expr())
 
         if sort:
+            logger.debug('Finalizing: Sorting...')
             df_merge = df_merge.sort('chrom', 'pos', 'end', 'id')
 
+        logger.debug('Finalizing: Drop columns...')
         drop_cols = ['_mg_index']
         if drop_filter:
             drop_cols.append('filter')
 
+        logger.debug('Finalizing: Done')
         return (
             df_merge
             .drop(drop_cols)

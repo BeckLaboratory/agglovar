@@ -7,12 +7,22 @@ __all__ = [
     'standardize',
 ]
 
-from collections.abc import Iterable, Container
+from collections.abc import (
+    Iterable,
+    Container,
+)
 from dataclasses import dataclass
+import logging
 import re
-from typing import Optional, Self, Any
+from typing import (
+    Optional,
+    Self,
+    Any,
+)
 
 import polars as pl
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)

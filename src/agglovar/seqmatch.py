@@ -6,11 +6,13 @@ __all__ = [
 
 import collections
 from dataclasses import dataclass
-import numpy as np
+import logging
 from typing import Optional
 
 import edlib
+import numpy as np
 
+from .align import op
 from .align.score import (
     AffineScoreModel,
     AFFINE_SCORE_MATCH,
@@ -18,7 +20,7 @@ from .align.score import (
     AFFINE_SCORE_GAP,
 )
 
-from .align import op
+logger = logging.getLogger(__name__)
 
 # Op codes for trace matrix (will be removed in a future version)
 _TRACE_OP_NONE = 0

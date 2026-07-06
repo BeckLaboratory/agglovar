@@ -7,8 +7,15 @@ __all__ = [
     'PairwiseJoin',
 ]
 
-from abc import ABC, abstractmethod
-from collections.abc import Iterator, Iterable
+from abc import (
+    ABC,
+    abstractmethod,
+)
+from collections.abc import (
+    Iterator,
+    Iterable,
+)
+import logging
 from pathlib import Path
 
 import polars as pl
@@ -19,6 +26,8 @@ from .weights import (
     WeightStrategy,
     DEFAULT_WEIGHT_STRATEGY,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class PairwiseJoin(ABC):

@@ -9,9 +9,16 @@ __all__ = [
     'CallsetDefInputType',
 ]
 
-from abc import ABC, abstractmethod
-from collections.abc import Container, Iterable
+from abc import (
+    ABC,
+    abstractmethod,
+)
+from collections.abc import (
+    Container,
+    Iterable,
+)
 import json
+import logging
 from pathlib import Path
 from typing import (
     Any,
@@ -24,6 +31,8 @@ import polars as pl
 
 from ..meta.decorators import lockable
 from ..util.str import collision_rename
+
+logger = logging.getLogger(__name__)
 
 
 class CallsetDef(NamedTuple):

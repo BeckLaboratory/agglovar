@@ -12,11 +12,19 @@ __all__ = [
     'stream_index',
 ]
 
+import logging
 import math
 from types import MappingProxyType
-from typing import Self, Optional, Iterator, Mapping
+from typing import (
+    Self,
+    Optional,
+    Iterator,
+    Mapping,
+)
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Integer to base
 INT_TO_BASE: list[str] = ['A', 'C', 'G', 'T']

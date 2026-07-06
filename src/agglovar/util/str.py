@@ -1,6 +1,11 @@
 """String utility functions."""
 
-from collections.abc import Container, Iterable, Iterator
+from collections.abc import (
+    Container,
+    Iterable,
+    Iterator,
+)
+import logging
 from typing import Optional
 
 
@@ -8,6 +13,8 @@ __all__ = [
     'collision_rename',
     'collision_rename_all',
 ]
+
+logger = logging.getLogger(__name__)
 
 
 def collision_rename(

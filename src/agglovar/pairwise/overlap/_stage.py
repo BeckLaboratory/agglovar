@@ -5,12 +5,17 @@ __all__ = [
 ]
 
 from collections.abc import Iterable
+import logging
 from typing import Optional
 
 import polars as pl
 
 from ...meta.decorators import immutable
-from ...meta.descriptors import BoundedFloat, CheckedBool, BoundedInt
+from ...meta.descriptors import (
+    BoundedFloat,
+    CheckedBool,
+    BoundedInt,
+)
 
 from ._const import (
     EXPR_OVERLAP_RO,
@@ -18,6 +23,8 @@ from ._const import (
     EXPR_OFFSET_DIST,
     EXPR_OFFSET_PROP,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @immutable

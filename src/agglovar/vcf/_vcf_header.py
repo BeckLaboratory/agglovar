@@ -12,19 +12,36 @@ __all__ = [
     'read_vcf_header',
 ]
 
+from abc import (
+    ABC,
+    abstractmethod,
+)
+from dataclasses import (
+    dataclass,
+    field,
+)
 import datetime
+import logging
 import reprlib
+from typing import (
+    TYPE_CHECKING,
+    Optional,
+    Union,
+)
 import warnings
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional, Union
 
 import polars as pl
 
-from ._vcf_const import VCF_SOURCE, VCF_TO_POLARS_TYPE, VCF_VERSION
+from ._vcf_const import (
+    VCF_SOURCE,
+    VCF_TO_POLARS_TYPE,
+    VCF_VERSION,
+)
 
 if TYPE_CHECKING:
     import pysam
+
+logger = logging.getLogger(__name__)
 
 PolarsDataType = Union[pl.DataType, type[pl.DataType]]
 

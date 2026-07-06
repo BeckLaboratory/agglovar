@@ -7,19 +7,32 @@ __all__ = [
     'iter_vcf',
 ]
 
-import warnings
+import logging
 from pathlib import Path
-from typing import Generator, Optional, Union
+from typing import (
+    Generator,
+    Optional,
+    Union,
+)
+import warnings
 
 import polars as pl
+import pysam
 
+from agglovar.expr.variant import (
+    id_expr,
+    sort_cols,
+)
 import agglovar.schema as _agg_schema
-from agglovar.expr.variant import id_expr, sort_cols
 
 from ._vcf_const import VCF_SAMPLE_FIXED_SCHEMA
-from ._vcf_header import VcfHeader, _number_to_polars_type, read_vcf_header
+from ._vcf_header import (
+    VcfHeader,
+    _number_to_polars_type,
+    read_vcf_header,
+)
 
-import pysam
+logger = logging.getLogger(__name__)
 
 PolarsDataType = Union[pl.DataType, type[pl.DataType]]
 

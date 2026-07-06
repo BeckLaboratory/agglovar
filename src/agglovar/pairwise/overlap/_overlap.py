@@ -11,8 +11,10 @@ from collections.abc import (
     MutableMapping,
 )
 import functools
+import logging
 import operator
 from pathlib import Path
+import time
 from typing import (
     Any,
     Optional,
@@ -21,13 +23,13 @@ from warnings import warn
 
 import polars as pl
 
-from ... import schema
 from ...meta.decorators import immutable
 from ...meta.descriptors import (
     CheckedBool,
     CheckedObject,
     BoundedInt,
 )
+from ... import schema
 from ...seqmatch import MatchScoreModel
 from ...util.lazy import materialize_pair
 
@@ -45,8 +47,9 @@ from ._const import (
     JOIN_COL_EXPR,
     RESERVED_COLS,
 )
-
 from ._stage import PairwiseOverlapStage
+
+logger = logging.getLogger(__name__)
 
 
 @immutable
@@ -247,6 +250,13 @@ class PairwiseOverlap(PairwiseJoin):
 
         :yields: A LazyFrame for each chunk.
         """
+        logger.debug('Starting join (chunked)...')
+
+        # Per-chunk timing/size logging is gated on DEBUG so an INFO-level run pays nothing: the
+        # extra df_b_filtered collect and the position-range/counts are only computed when the
+        # log record would actually be emitted.
+        debug = logger.isEnabledFor(logging.DEBUG)
+
         join_empty = True
 
         chunk_range = self._get_chunk_range()
@@ -267,24 +277,66 @@ class PairwiseOverlap(PairwiseJoin):
                 .lazy()
             )
 
+            chrom_t0 = time.perf_counter()
+            chrom_chunks = 0
+            chrom_pairs = 0
+            chrom_join_s = 0.0
+            chrom_b_max = 0
+
             while start_index_a < last_index_a:
                 end_index_a = start_index_a + chunk_size
 
-                df_a_chunk = df_a_chrom.filter(
+                df_a_chunk_df = df_a_chrom.filter(
                     pl.col('_index_chrom_a') >= start_index_a,
                     pl.col('_index_chrom_a') < end_index_a,
-                ).collect().lazy()
+                ).collect()
+                df_a_chunk = df_a_chunk_df.lazy()
 
                 df_b_filtered = self._chunk_relative(df_a_chunk, df_b, chrom, chunk_range)
 
-                yield (
-                    self._join_pairwise(df_a_chunk, df_b_filtered)
-                    .collect()
-                    .lazy()
-                )
+                if debug:
+                    # Collect df_b_filtered once and reuse it for both the row count and the
+                    # join (this replaces, not adds to, the scan the join would do anyway).
+                    df_b_filtered_df = df_b_filtered.collect()
+                    n_b = df_b_filtered_df.height
+
+                    t0 = time.perf_counter()
+                    df_join = self._join_pairwise(df_a_chunk, df_b_filtered_df.lazy()).collect()
+                    dt = time.perf_counter() - t0
+
+                    # pos range of the df_a chunk: if chunks are not position-local, the relative
+                    # df_b filter cannot prune and n_b stays near the full-chromosome count.
+                    logger.debug(
+                        'Join chunk: chrom %s [%d:%d] pos_a=%s-%s n_a=%d n_b=%d pairs=%d in %.3fs'
+                        % (chrom, start_index_a, end_index_a,
+                           df_a_chunk_df['pos_a'].min(), df_a_chunk_df['pos_a'].max(),
+                           df_a_chunk_df.height, n_b, df_join.height, dt)
+                    )
+
+                    chrom_chunks += 1
+                    chrom_pairs += df_join.height
+                    chrom_join_s += dt
+                    if n_b > chrom_b_max:
+                        chrom_b_max = n_b
+
+                    yield df_join.lazy()
+                else:
+                    yield (
+                        self._join_pairwise(df_a_chunk, df_b_filtered)
+                        .collect()
+                        .lazy()
+                    )
 
                 join_empty = False
                 start_index_a = end_index_a
+
+            if debug:
+                logger.debug(
+                    'Join chrom done: chrom %s n_a=%d chunks=%d n_b_max=%d pairs=%d '
+                    'join=%.3fs wall=%.3fs'
+                    % (chrom, last_index_a, chrom_chunks, chrom_b_max, chrom_pairs,
+                       chrom_join_s, time.perf_counter() - chrom_t0)
+                )
 
         if join_empty:
             # Yield an empty frame with the correct schema so pl.concat never sees an empty list.
@@ -324,6 +376,8 @@ class PairwiseOverlap(PairwiseJoin):
 
         :yields: A LazyFrame for each chunk.
         """
+        logger.debug('Starting join (not chunked)...')
+
         join_empty = True  # Detects if no joins were written
 
         chrom_list = sorted(

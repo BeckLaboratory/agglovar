@@ -6,13 +6,19 @@ __all__ = [
 ]
 
 import hashlib
+import logging
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import (
+    Iterable,
+    Optional,
+)
 
 import Bio.SeqIO
 import polars as pl
 
 from . import io
+
+logger = logging.getLogger(__name__)
 
 
 def read_fai(

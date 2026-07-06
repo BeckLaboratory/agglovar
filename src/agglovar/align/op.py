@@ -42,9 +42,13 @@ __all__ = [
 ]
 
 
-import numpy as np
+import logging
 from types import MappingProxyType
 from typing import Mapping
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
 
 INT_STR_SET: frozenset[str] = frozenset({'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', })
 """Set of valid integer character strings representing operation codes."""

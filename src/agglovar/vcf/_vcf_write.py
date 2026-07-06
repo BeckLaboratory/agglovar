@@ -6,12 +6,15 @@ __all__ = [
     'write_vcf',
 ]
 
+import logging
 from pathlib import Path
 from typing import Literal
 
 import polars as pl
 
 from ._vcf_const import VCF_SOURCE
+
+logger = logging.getLogger(__name__)
 
 
 def write_vcf(

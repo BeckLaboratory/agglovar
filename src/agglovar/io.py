@@ -4,10 +4,19 @@ __all__ = [
     'PlainOrGzReader',
 ]
 
-from dataclasses import dataclass, field
+from dataclasses import (
+    dataclass,
+    field,
+)
 import gzip
+import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import (
+    Any,
+    Optional,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

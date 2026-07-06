@@ -136,12 +136,24 @@ __all__ = [
 
 from collections.abc import Container
 from enum import Enum
-from typing import Any, Iterable, Mapping, Optional
+import logging
+from typing import (
+    Any,
+    Iterable,
+    Mapping,
+    Optional,
+)
 
 import polars as pl
 
 from ..meta.decorators import immutable
-from ..meta.descriptors import CheckedBool, BoundedFloat, CheckedString
+from ..meta.descriptors import (
+    CheckedBool,
+    BoundedFloat,
+    CheckedString,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class ElementPriority(Enum):

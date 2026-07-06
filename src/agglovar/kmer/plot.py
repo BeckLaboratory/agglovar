@@ -5,8 +5,10 @@ __all__ = [
 ]
 
 import collections
-import numpy as np
+import logging
 from typing import Any
+
+import numpy as np
 
 from . import util as kmer_util
 
@@ -21,6 +23,8 @@ try:
     t_mpl_Axes = matplotlib.axes.Axes
 except ImportError:
     pass
+
+logger = logging.getLogger(__name__)
 
 
 def dotplot(

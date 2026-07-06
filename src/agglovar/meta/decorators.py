@@ -18,9 +18,12 @@ __all__ = [
     'immutable',
 ]
 
+import logging
 from typing import Container
 
 from ..util.str import collision_rename
+
+logger = logging.getLogger(__name__)
 
 
 def lockable(

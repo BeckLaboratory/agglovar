@@ -12,12 +12,23 @@ __all__ = [
     'get_affine_by_params',
 ]
 
-from abc import ABC, abstractmethod
-import numpy as np
+from abc import (
+    ABC,
+    abstractmethod,
+)
+import logging
 import re
-from typing import Any, Iterable, Self
+from typing import (
+    Any,
+    Iterable,
+    Self,
+)
+
+import numpy as np
 
 from . import op
+
+logger = logging.getLogger(__name__)
 
 AFFINE_SCORE_MATCH = 2.0
 """Default match score."""

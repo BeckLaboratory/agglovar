@@ -26,6 +26,7 @@ __all__ = [
 ]
 
 from contextlib import contextmanager
+import logging
 from pathlib import Path
 import re
 import tempfile
@@ -33,6 +34,8 @@ from typing import Iterator
 
 import polars as pl
 
+
+logger = logging.getLogger(__name__)
 
 _SCAN_TOKEN = re.compile(r'\bSCAN\b')
 
