@@ -262,10 +262,16 @@ class MergeCumulative(MergeBase):
             for callset_mat in callsets_mat
         ) + 1
 
-        mg_sort_expr = (
-            pl.col('chrom').replace_strict(chrom_rank, return_dtype=pl.Int64) * pos_mult
-            + pl.col('pos')
-        ).alias('_mg_sort')
+        if chrom_rank:
+            mg_sort_expr = (
+                pl.col('chrom').replace_strict(chrom_rank, return_dtype=pl.Int64) * pos_mult
+                + pl.col('pos')
+            ).alias('_mg_sort')
+        else:
+            # All callsets are empty (no chromosomes present). replace_strict on an empty mapping
+            # keeps the String dtype and breaks the arithmetic, so fall back to a trivial Int64 key;
+            # the value is irrelevant on a zero-row frame but the dtype must match the non-empty case.
+            mg_sort_expr = pl.col('pos').cast(pl.Int64).alias('_mg_sort')
 
         # Derive merge_stat_cols (the per-pair stats schema from the pairwise join) once, using
         # an empty pairwise call. Polars short-circuits on empty inputs so this is cheap.
