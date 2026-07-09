@@ -30,6 +30,7 @@ __all__ = [
 ]
 
 from collections.abc import Iterable
+from concurrent.futures import Executor
 from enum import Enum
 import logging
 from pathlib import Path
@@ -176,6 +177,7 @@ class MergeCumulative(MergeBase):
             sort: bool = True,
             add_id: bool = True,
             temp_dir: bool | str | Path = False,
+            match_threads: Optional[int] = 4,
     ) -> pl.LazyFrame:
         """
         Intersect callsets.
@@ -187,6 +189,13 @@ class MergeCumulative(MergeBase):
             last (after "_index" is set).
         :param temp_dir: Forwarded to the pairwise intersect for each cumulative step. See
             :meth:`agglovar.pairwise.base.PairwiseJoin.join_iter`.
+        :param match_threads: Number of worker processes used to score sequence matches
+            (``match_prop``) during the merge. A single ``spawn``-context process pool is created
+            once and reused across all sources. Defaults to 4. If ``None``, no pool is created and
+            match scoring runs serially (turns multiprocessing off entirely). Ignored when the
+            pairwise join does no sequence matching. In a spawn-restricted or resource-limited
+            environment the pool degrades to serial scoring with a logged warning (see
+            :meth:`agglovar.pairwise.overlap.PairwiseOverlap.make_match_pool`).
 
         :return: A merged callset table.
         """
@@ -336,13 +345,62 @@ class MergeCumulative(MergeBase):
 
         logger.debug('Merge source %d: Cumulative size %s' % (iter_idx, f'{df_cumulative.height:,}'))
 
+        # Create one match-scoring pool for the whole merge (spawn context, sized by match_threads;
+        # None or a restricted environment keeps scoring serial). The pool is owned here and passed
+        # into each per-source join; it is never retained on the pairwise object.
+        with self.pairwise_join.make_match_pool(match_threads) as match_pool:
+            df_cumulative, df_sources = self._merge_sources(
+                callsets_mat=callsets_mat,
+                df_cumulative=df_cumulative,
+                df_sources=df_sources,
+                next_mg_index=next_mg_index,
+                merge_stat_cols=merge_stat_cols,
+                stat_struct_dtype=stat_struct_dtype,
+                sources_schema=sources_schema,
+                pairwise_cols=pairwise_cols,
+                mg_sort_expr=mg_sort_expr,
+                temp_dir=temp_dir,
+                match_pool=match_pool,
+            )
+
+        return self._finalize(
+            df_sources=df_sources,
+            callsets_mat=callsets_mat,
+            all_col_dict=all_col_dict,
+            sort=sort,
+            add_id=add_id,
+        )
+
+    def _merge_sources(
+            self,
+            callsets_mat: list[dict[str, Any]],
+            df_cumulative: pl.DataFrame,
+            df_sources: pl.DataFrame,
+            next_mg_index: int,
+            merge_stat_cols: dict[str, pl.DataType],
+            stat_struct_dtype: pl.DataType,
+            sources_schema: pl.Schema,
+            pairwise_cols: list[str],
+            mg_sort_expr: pl.Expr,
+            temp_dir: bool | str | Path,
+            match_pool: Optional[Executor] = None,
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
+        """Merge each remaining callset into the cumulative table, one source at a time.
+
+        The ``match_pool`` created by :meth:`__call__` is passed to each per-source pairwise join so
+        sequence matches score on the shared process pool (or serially when it is ``None``). Returns
+        the updated cumulative variant table and the long-form sources sidecar.
+        """
         # Iterate remaining callsets.
         for iter_idx, callset_mat in enumerate(callsets_mat[1:], start=1):
             logger.debug('Merge source %d: Merging "%s"' % (iter_idx, callset_mat['name']))
 
             df_join = (
-                self.pairwise_join.join(df_cumulative.lazy(), callset_mat['table'].lazy(), temp_dir=temp_dir)
-                .sort('weight', descending=True)
+                self.pairwise_join.join(
+                    df_cumulative.lazy(), callset_mat['table'].lazy(),
+                    temp_dir=temp_dir, match_pool=match_pool,
+                )
+                .sort('weight', descending=True, maintain_order=True)
                 .unique('index_a', keep='first')
                 .unique('index_b', keep='first')
                 .collect()
@@ -460,13 +518,7 @@ class MergeCumulative(MergeBase):
 
             logger.debug('Merge source %d: Cumulative size %s' % (iter_idx, f'{df_cumulative.height:,}'))
 
-        return self._finalize(
-            df_sources=df_sources,
-            callsets_mat=callsets_mat,
-            all_col_dict=all_col_dict,
-            sort=sort,
-            add_id=add_id,
-        )
+        return df_cumulative, df_sources
 
     def _finalize(
             self,

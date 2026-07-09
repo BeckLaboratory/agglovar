@@ -48,6 +48,11 @@ def merge_depth(
     if isinstance(df, pl.DataFrame):
         df = df.lazy()
 
+    logger.debug(
+        'merge_depth: distance=%d cols=%s max_depth=%r'
+        % (distance, tuple(col_names), col_max_depth)
+    )
+
     return (
         melt_depth(
             df=df.with_columns(pl.col(col_names.end) + distance),
@@ -157,6 +162,8 @@ def melt_depth(
     )
 
     assert col_loc != col_depth, 'Column names "%s" and "%s" are the same' % (col_loc, col_depth)
+
+    logger.debug('melt_depth: cols=%s loc=%s depth=%s' % (tuple(col_names), col_loc, col_depth))
 
     return (
         pl.concat(

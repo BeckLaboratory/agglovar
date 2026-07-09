@@ -10,9 +10,14 @@ from collections.abc import (
     Mapping,
     MutableMapping,
 )
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
+from contextlib import contextmanager
 import functools
 import logging
+import multiprocessing
 import operator
+import os
 from pathlib import Path
 import time
 from typing import (
@@ -45,11 +50,29 @@ from ._const import (
     DEFAULT_JOIN_COLS,
     INVARIANT_JOIN_COLS,
     JOIN_COL_EXPR,
+    MATCH_CHUNK_SIZE,
     RESERVED_COLS,
 )
 from ._stage import PairwiseOverlapStage
 
 logger = logging.getLogger(__name__)
+
+
+# Match-pool worker globals. Each spawned worker builds one scoring model via _match_worker_init
+# (the model is picklable and passed once as an initializer argument), then scores chunks of pairs.
+_MATCH_WORKER_MODEL: Optional[MatchScoreModel] = None
+
+
+def _match_worker_init(match_score_model: MatchScoreModel) -> None:
+    """Process-pool initializer: store the scoring model once per worker process."""
+    global _MATCH_WORKER_MODEL
+    _MATCH_WORKER_MODEL = match_score_model
+
+
+def _match_worker_chunk(pairs: list[tuple[str, str]]) -> list[float]:
+    """Score a chunk of ``(seq_a, seq_b)`` pairs in a worker process."""
+    model = _MATCH_WORKER_MODEL
+    return [model.match_prop(seq_a, seq_b) for seq_a, seq_b in pairs]
 
 
 @immutable
@@ -119,23 +142,11 @@ class PairwiseOverlap(PairwiseJoin):
         self.chunk_size = chunk_size
         self.n_threads = n_threads
 
-        # match_prop expression: struct-based map_elements so both seq columns are accessible.
-        # strategy='threading' runs each element in a separate Python thread. edlib is a C
-        # extension that releases the GIL, so threads run concurrently on multiple cores.
-        if any(stage.has_match for stage in self.stages):
-            _model = self.match_score_model
-
-            self.expr_match_prop = (
-                pl.struct(pl.col('seq_a'), pl.col('seq_b'))
-                .map_elements(
-                    lambda row: _model.match_prop(row['seq_a'], row['seq_b']),
-                    return_dtype=pl.Float64,
-                    strategy='threading',
-                )
-                .cast(pl.Float32)
-            )
-        else:
-            self.expr_match_prop = pl.lit(None).cast(pl.Float32)
+        # Serial (pool=None) match_prop expression, kept only for schema derivation and the
+        # match_prop_expr property. The expression actually executed by a join is built per-call by
+        # _match_prop_expr(pool), binding scoring to a caller-provided pool; no pool is retained on
+        # this (immutable) object. See make_match_pool / _match_prop_batch.
+        self.expr_match_prop = self._match_prop_expr(None)
 
         # Set join columns
         self._set_join_cols(
@@ -206,12 +217,133 @@ class PairwiseOverlap(PairwiseJoin):
         """Polars expression for the configured weight strategy."""
         return self.weight_strategy.expr
 
+    def _match_prop_expr(self, match_pool: Optional[ProcessPoolExecutor]) -> pl.Expr:
+        """Build the ``match_prop`` column expression, binding scoring to ``match_pool``.
+
+        The expression receives the whole ``(seq_a, seq_b)`` batch per join so scoring can be
+        dispatched across a process pool. The pool is captured in the callback closure (thread-safe
+        regardless of which thread Polars runs the UDF on) rather than stored on this object.
+
+        :param match_pool: Process pool to score across, or ``None`` to score serially.
+        """
+        if not self.has_match:
+            return pl.lit(None).cast(pl.Float32)
+
+        return (
+            pl.struct(pl.col('seq_a'), pl.col('seq_b'))
+            .map_batches(
+                functools.partial(self._match_prop_batch, pool=match_pool),
+                return_dtype=pl.Float64,
+            )
+            .cast(pl.Float32)
+        )
+
+    def _score_serial(self, seq_a: list[str], seq_b: list[str]) -> pl.Series:
+        """Score ``match_prop`` for the given sequence pairs serially in this process."""
+        model = self.match_score_model
+        return pl.Series([model.match_prop(a, b) for a, b in zip(seq_a, seq_b)], dtype=pl.Float64)
+
+    def _match_prop_batch(
+            self,
+            batch: pl.Series,
+            pool: Optional[ProcessPoolExecutor],
+    ) -> pl.Series:
+        """Score ``match_prop`` for a batch of ``(seq_a, seq_b)`` struct rows.
+
+        When ``pool`` is not ``None`` and the batch has at least ``2 * MATCH_CHUNK_SIZE`` rows, the
+        pairs are scored across worker processes in fixed-size chunks; otherwise they are scored
+        serially in this process. Below the threshold the pool's per-batch overhead outweighs the
+        parallel gain (benchmarked), so the guard reverts to serial.
+
+        :param batch: Struct series with ``seq_a`` and ``seq_b`` fields.
+        :param pool: Process pool to score across, or ``None`` to score serially.
+        """
+        seq_a = batch.struct.field('seq_a').to_list()
+        seq_b = batch.struct.field('seq_b').to_list()
+        n = len(seq_a)
+
+        if pool is None or n < 2 * MATCH_CHUNK_SIZE:
+            return self._score_serial(seq_a, seq_b)
+
+        pairs = list(zip(seq_a, seq_b))
+        chunks = [pairs[i:i + MATCH_CHUNK_SIZE] for i in range(0, n, MATCH_CHUNK_SIZE)]
+
+        try:
+            values: list[float] = []
+            for chunk_values in pool.map(_match_worker_chunk, chunks):
+                values.extend(chunk_values)
+        except BrokenProcessPool:
+            # A worker died (e.g. OOM on a pathological sequence). Fall back to serial so one bad
+            # batch does not abort the whole join. A permanently broken pool re-raises immediately on
+            # each subsequent batch, so every later batch simply takes this same serial path.
+            logger.warning('Match pool broke; scoring this batch serially')
+            return self._score_serial(seq_a, seq_b)
+
+        return pl.Series(values, dtype=pl.Float64)
+
+    @contextmanager
+    def make_match_pool(
+            self,
+            match_threads: Optional[int] = None,
+    ) -> Iterator[Optional[ProcessPoolExecutor]]:
+        """Create a match-scoring process pool for the duration of the block, or yield ``None``.
+
+        The caller passes the yielded pool to :meth:`join`/:meth:`join_iter` via ``match_pool``; the
+        pool is not retained on this object. It uses the ``spawn`` start method (forking deadlocks
+        with Polars' thread pool) and seeds one scoring model per worker. Worker count is capped to
+        the CPUs available to the process. A warm-up probe forces the workers to start inside this
+        call, so a spawn-restricted or resource-limited environment is detected here and degraded to
+        serial scoring (with a logged warning) instead of failing mid-join.
+
+        :param match_threads: Requested worker count, or ``None`` to score serially.
+
+        :raises ValueError: If ``match_threads`` is not ``None`` and is less than 1.
+
+        :yields: A live process pool, or ``None`` when scoring serially.
+        """
+        if match_threads is not None and match_threads < 1:
+            raise ValueError(f'match_threads must be None or a positive integer: {match_threads}')
+
+        if match_threads is None or not self.has_match:
+            yield None
+            return
+
+        try:
+            available = len(os.sched_getaffinity(0))
+        except AttributeError:  # sched_getaffinity is Linux-only
+            available = os.cpu_count() or 1
+
+        workers = max(1, min(match_threads, available))
+
+        pool = ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=multiprocessing.get_context('spawn'),
+            initializer=_match_worker_init,
+            initargs=(self.match_score_model,),
+        )
+
+        try:
+            # Warm-up probe: force the workers to spawn now so a restricted environment (no spawn,
+            # PID/semaphore limits, blocked /dev/shm) fails here rather than deep inside a join.
+            list(pool.map(_match_worker_chunk, [[('A', 'A')]] * workers))
+        except (OSError, BrokenProcessPool) as e:
+            logger.warning('Match pool unavailable (%s); scoring match_prop serially', e)
+            pool.shutdown()
+            yield None
+            return
+
+        try:
+            yield pool
+        finally:
+            pool.shutdown()
+
     def join_iter(
             self,
             df_a: pl.DataFrame | pl.LazyFrame,
             df_b: pl.DataFrame | pl.LazyFrame,
             retain_index: bool = False,
             temp_dir: bool | str | Path = False,
+            match_pool: Optional[ProcessPoolExecutor] = None,
     ) -> Iterator[pl.LazyFrame]:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
@@ -223,6 +355,8 @@ class PairwiseOverlap(PairwiseJoin):
             ``False`` (default) collects both into memory; ``True`` writes them to the
             system temp directory as parquet files; a ``str``/``Path`` writes them to
             that directory. Temp files are always removed on exit.
+        :param match_pool: Process pool for parallel ``match_prop`` scoring (from
+            :meth:`make_match_pool`), or ``None`` to score serially.
 
         :yields: A LazyFrame for each chunk.
         """
@@ -230,22 +364,24 @@ class PairwiseOverlap(PairwiseJoin):
         df_a, df_b = self._prepare_tables(df_a, df_b, warn_on_reserved=True, retain_index=retain_index)
 
         if self.chunk_size == 0 or (self.is_equi_offset and self.chunk_size is None):
-            return self._join_iter_notchunked(df_a, df_b)
+            return self._join_iter_notchunked(df_a, df_b, match_pool=match_pool)
 
         # Materialise both tables once before the chunked loop. with_row_index in _prepare_tables
         # blocks predicate pushdown into the parquet source, so every downstream collect would
         # otherwise trigger a full-dataset scan.
-        return self._join_iter_chunked_materialised(df_a, df_b, temp_dir)
+        return self._join_iter_chunked_materialised(df_a, df_b, temp_dir, match_pool=match_pool)
 
     def _join_iter_chunked(
             self,
             df_a: pl.DataFrame | pl.LazyFrame,
             df_b: pl.DataFrame | pl.LazyFrame,
+            match_pool: Optional[ProcessPoolExecutor] = None,
     ) -> Iterator[pl.LazyFrame]:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
         :param df_a: Source dataframe after `_prepare_tables()`.
         :param df_b: Target dataframe after `_prepare_tables()`.
+        :param match_pool: Process pool for parallel ``match_prop`` scoring, or ``None`` for serial.
 
         :yields: A LazyFrame for each chunk.
         """
@@ -307,7 +443,8 @@ class PairwiseOverlap(PairwiseJoin):
                 if debug:
                     t0 = time.perf_counter()
                     df_join = self._join_pairwise(
-                        df_a_chunk, df_b_chrom, stage_ranges=stage_ranges, diag=diag,
+                        df_a_chunk, df_b_chrom, match_pool=match_pool,
+                        stage_ranges=stage_ranges, diag=diag,
                     ).collect()
                     dt = time.perf_counter() - t0
 
@@ -331,7 +468,9 @@ class PairwiseOverlap(PairwiseJoin):
                     yield df_join.lazy()
                 else:
                     yield (
-                        self._join_pairwise(df_a_chunk, df_b_chrom, stage_ranges=stage_ranges)
+                        self._join_pairwise(
+                            df_a_chunk, df_b_chrom, match_pool=match_pool, stage_ranges=stage_ranges,
+                        )
                         .collect()
                         .lazy()
                     )
@@ -353,36 +492,42 @@ class PairwiseOverlap(PairwiseJoin):
             # scan_parquet nodes over temp files that _join_iter_chunked_disk will unlink
             # once this generator exits. stage_ranges is left as None (no relative filter needed
             # for an empty frame).
-            yield self._join_pairwise(df_a.head(0), df_b.head(0)).collect().lazy()
+            yield self._join_pairwise(
+                df_a.head(0), df_b.head(0), match_pool=match_pool,
+            ).collect().lazy()
 
     def _join_iter_chunked_materialised(
             self,
             df_a: pl.LazyFrame,
             df_b: pl.LazyFrame,
             temp_dir: bool | str | Path,
+            match_pool: Optional[ProcessPoolExecutor] = None,
     ) -> Iterator[pl.LazyFrame]:
         """Materialise the prepared tables once and run the chunked join.
 
         :param df_a: Source dataframe after `_prepare_tables()`.
         :param df_b: Target dataframe after `_prepare_tables()`.
         :param temp_dir: Materialisation policy. See :meth:`join_iter`.
+        :param match_pool: Process pool for parallel ``match_prop`` scoring, or ``None`` for serial.
 
         :yields: A LazyFrame for each chunk.
         """
         with materialize_pair(
             df_a, df_b, temp_dir, prefix='pairwise_overlap_prep_',
         ) as (df_a_mat, df_b_mat):
-            yield from self._join_iter_chunked(df_a_mat, df_b_mat)
+            yield from self._join_iter_chunked(df_a_mat, df_b_mat, match_pool=match_pool)
 
     def _join_iter_notchunked(
             self,
             df_a: pl.DataFrame | pl.LazyFrame,
             df_b: pl.DataFrame | pl.LazyFrame,
+            match_pool: Optional[ProcessPoolExecutor] = None,
     ) -> Iterator[pl.LazyFrame]:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
         :param df_a: Source dataframe after `_prepare_tables()`.
         :param df_b: Target dataframe after `_prepare_tables()`.
+        :param match_pool: Process pool for parallel ``match_prop`` scoring, or ``None`` for serial.
 
         :yields: A LazyFrame for each chunk.
         """
@@ -399,6 +544,7 @@ class PairwiseOverlap(PairwiseJoin):
             yield self._join_pairwise(
                 df_a.filter(pl.col('chrom_a') == chrom),
                 df_b.filter(pl.col('chrom_b') == chrom),
+                match_pool=match_pool,
             )
 
             join_empty = False
@@ -406,12 +552,13 @@ class PairwiseOverlap(PairwiseJoin):
         if join_empty:
             # If no join tables were yielded, yield an empty one. This creates an empty join table
             # with the correct structure and prevents pl.concat from failing on an empty list.
-            yield self._join_pairwise(df_a.head(0), df_b.head(0))
+            yield self._join_pairwise(df_a.head(0), df_b.head(0), match_pool=match_pool)
 
     def _join_pairwise(
             self,
             df_a: pl.LazyFrame,
             df_b: pl.LazyFrame,
+            match_pool: Optional[ProcessPoolExecutor] = None,
             stage_ranges: Optional[list[dict[tuple[str, str], list[pl.Expr]]]] = None,
             diag: Optional[dict] = None,
     ) -> pl.LazyFrame:
@@ -421,6 +568,8 @@ class PairwiseOverlap(PairwiseJoin):
 
         :param df_a: Source chunk table.
         :param df_b: Target table (chromosome-sliced when ``stage_ranges`` is given).
+        :param match_pool: Process pool for parallel ``match_prop`` scoring, or ``None`` for serial.
+            The ``match_prop`` column is built per call with the pool bound into its callback.
         :param stage_ranges: Per-stage chunk-range dicts, one per stage in ``self.stages``. When
             given, each stage filters ``df_b`` with its own two-sided bounds (see
             :meth:`_chunk_relative`) before the join. When ``None``, every stage joins ``df_b``
@@ -428,6 +577,13 @@ class PairwiseOverlap(PairwiseJoin):
         :param diag: Optional DEBUG collector. If not ``None``, ``diag['n_b']`` is appended with the
             per-stage filtered df_b row count.
         """
+        # match_prop is built per call so scoring binds to the caller's pool; join_col_exprs holds
+        # the remaining (pool-independent) columns. seq_a/seq_b are still present here, before the
+        # select below narrows the frame.
+        select_exprs = list(self.join_col_exprs)
+        if self._emit_match_prop:
+            select_exprs.append(self._match_prop_expr(match_pool).alias('match_prop'))
+
         join_list = []
 
         for stage_idx, stage in enumerate(self.stages):
@@ -447,7 +603,7 @@ class PairwiseOverlap(PairwiseJoin):
                 df_join = df_a.join(df_b_stage, how='cross')
 
             df_join = df_join.select(
-                *self.join_col_exprs,
+                *select_exprs,
             )
 
             if self.compute_weight:
@@ -747,6 +903,10 @@ class PairwiseOverlap(PairwiseJoin):
         self.join_cols = tuple(join_col_list)
         self.join_col_exprs = tuple(expr for expr in join_expr_map.values() if expr is not None)
 
+        # match_prop is emitted as an output column but built per join (pool-bound) in
+        # _join_pairwise rather than precomputed into join_col_exprs above.
+        self._emit_match_prop = 'match_prop' in join_expr_map
+
     def _append_join_cols(
             self,
             exprs: Iterable[pl.Expr | str] | pl.Expr | str,
@@ -780,7 +940,7 @@ class PairwiseOverlap(PairwiseJoin):
                     col_expr = JOIN_COL_EXPR[col_name].alias(col_name)
 
                 elif col_name == 'match_prop':
-                    col_expr = self.match_prop_expr.alias(col_name)
+                    col_expr = None  # Built per join (pool-bound) in _join_pairwise, not precomputed
 
                 elif col_name == 'weight':
                     col_expr = None  # Set later

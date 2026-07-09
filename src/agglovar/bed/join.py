@@ -7,6 +7,7 @@ __all__ = [
 
 import logging
 from pathlib import Path
+import time
 from typing import (
     Iterable,
     Iterator,
@@ -24,8 +25,14 @@ from .col import (
 
 logger = logging.getLogger(__name__)
 
-CHUNK_SIZE: int = 2_500
-"""Default size of join chunks. Breaks up tables into batches of this size or less."""
+CHUNK_SIZE: int = 25_000
+"""
+Default number of df_a records per chunk. Table A is processed one chromosome at a time and split
+into chunks of this size or less; each chunk drives one ``join_where`` (IEJoin) against the B
+records overlapping the chunk's position span. Larger chunks amortize the fixed per-chunk overhead
+(query setup and the per-chunk B pre-filter) over more rows, but widen each chunk's span so more B
+records enter each join. Tune based on available RAM.
+"""
 
 
 class _JoinResources:
@@ -194,6 +201,11 @@ def pairwise_join_iter(
         col_names_b=col_names_b,
     )
 
+    logger.debug(
+        'Starting bed join: distance=%d chunk_size=%d temp_dir=%r cols_a=%s cols_b=%s'
+        % (distance, chunk_size, temp_dir, tuple(resources.col_a), tuple(resources.col_b))
+    )
+
     with materialize_pair(
         resources.df_a, resources.df_b, temp_dir, prefix='bed_join_prep_',
     ) as (df_a_mat, df_b_mat):
@@ -273,6 +285,10 @@ def _join_chunks(
     col_a = join_resources.col_a
     col_b = join_resources.col_b
 
+    # Per-chunk timing and the df_b survivor count require extra collects, so gate them on DEBUG:
+    # an INFO-level run pays nothing and never materializes the diagnostics.
+    debug = logger.isEnabledFor(logging.DEBUG)
+
     # Restrict the chrom loop to chroms present in both tables. Chroms unique to A
     # would otherwise drive a wasted A chunk loop with no possible matches.
     for chrom, last_index_a in (
@@ -286,11 +302,30 @@ def _join_chunks(
         )
         .sort(col_a.chrom)
     ).collect().rows():
+        # Collect this chromosome's A and B once into memory. The chunk loop below re-filters
+        # df_a_chrom (per index range) and df_b_chrom (per prefilter bounds) many times; leaving
+        # them lazy re-runs the chrom filter over the full materialized df_a/df_b on every chunk,
+        # which dominates runtime (fixed per-chunk cost independent of the join size). Collecting
+        # per chrom makes the per-chunk filters operate on the small per-chrom frame instead.
+        # Mirrors agglovar.pairwise.overlap._overlap._join_iter_chunked.
         df_a_chrom = (
             df_a.filter(pl.col(col_a.chrom) == chrom)
             .with_row_index('_index_chrom_a')
+            .collect()
+            .lazy()
         )
-        df_b_chrom = df_b.filter(pl.col(col_b.chrom) == chrom)
+        df_b_chrom = (
+            df_b.filter(pl.col(col_b.chrom) == chrom)
+            .collect()
+            .lazy()
+        )
+
+        if debug:
+            chrom_t0 = time.perf_counter()
+            chrom_chunks = 0
+            chrom_pairs = 0
+            chrom_join_s = 0.0
+            chrom_b_max = 0
 
         start_index_a = 0
         while start_index_a < last_index_a:
@@ -323,12 +358,39 @@ def _join_chunks(
                 pl.col(col_b.end) + distance >= pos_min,
             )
 
-            yield _build_join_pair(
-                df_a_chunk,
-                df_b_chunk,
-                distance,
-                col_a,
-                col_b,
-            ).collect().lazy()
+            # The join itself is computed identically regardless of log level; only the diagnostics
+            # below are gated on DEBUG, so raising the log level cannot change the result.
+            if debug:
+                t0 = time.perf_counter()
 
+            df_join = _build_join_pair(df_a_chunk, df_b_chunk, distance, col_a, col_b).collect()
+
+            if debug:
+                dt = time.perf_counter() - t0
+                # n_b is the count of B records surviving the range prefilter for this chunk. When
+                # A is position-local it stays small; when it approaches the chrom's B total the
+                # prefilter is not pruning. pos_min-end_max is the chunk's position span.
+                n_b = df_b_chunk.select(pl.len()).collect().item()
+
+                logger.debug(
+                    'Join chunk: chrom %s [%d:%d] pos=%s-%s n_b=%d pairs=%d in %.3fs'
+                    % (chrom, start_index_a, end_index_a, pos_min, end_max,
+                       n_b, df_join.height, dt)
+                )
+
+                chrom_chunks += 1
+                chrom_pairs += df_join.height
+                chrom_join_s += dt
+                if n_b > chrom_b_max:
+                    chrom_b_max = n_b
+
+            yield df_join.lazy()
             start_index_a = end_index_a
+
+        if debug:
+            logger.debug(
+                'Join chrom done: chrom %s n_a=%d chunks=%d n_b_max=%d pairs=%d '
+                'join=%.3fs wall=%.3fs'
+                % (chrom, last_index_a, chrom_chunks, chrom_b_max, chrom_pairs,
+                   chrom_join_s, time.perf_counter() - chrom_t0)
+            )

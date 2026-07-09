@@ -14,6 +14,7 @@ from .col import (
     get_coord_cols,
 )
 from .join import (
+    CHUNK_SIZE,
     pairwise_join,
     pairwise_join_iter,
 )
@@ -36,6 +37,7 @@ def as_bool(
         col_names_a: Optional[CoordCol | Iterable[str] | str] = None,
         col_names_b: Optional[CoordCol | Iterable[str] | str] = None,
         temp_dir: bool | str | Path = False,
+        chunk_size: int = CHUNK_SIZE,
 ) -> pl.LazyFrame:
     """Add a boolean column to df_a indicating whether each record intersects with df_b.
 
@@ -47,6 +49,8 @@ def as_bool(
     :param col_names_a: Columns in a (chromosome or query ID, pos, end).
     :param col_names_b: Columns in b (chromosome or query ID, pos, end).
     :param temp_dir: How to materialise the prepared tables before iterating. See
+        :func:`agglovar.bed.join.pairwise_join`.
+    :param chunk_size: Chunk A by this size per chromosome. See
         :func:`agglovar.bed.join.pairwise_join`.
 
     :return: A LazyFrame with two columns: ``_index`` and ``name``.
@@ -65,12 +69,15 @@ def as_bool(
 
     hit_val = not negate
 
+    logger.debug('as_bool: name=%r distance=%d negate=%s' % (name, distance, negate))
+
     join_list = []
 
     for df_join in pairwise_join_iter(
             df_a=df_a,
             df_b=df_b,
             distance=distance,
+            chunk_size=chunk_size,
             col_names_a=col_names_a,
             col_names_b=col_names_b,
             temp_dir=temp_dir,
@@ -81,6 +88,8 @@ def as_bool(
             .collect()
             .lazy()
         )
+
+    logger.debug('as_bool: collected %d non-empty join chunk(s)' % len(join_list))
 
     if '_index' in df_a.collect_schema().names():
         df_a_indexed = df_a
@@ -119,6 +128,7 @@ def as_proportion(
         col_names_a: Optional[CoordCol | Iterable[str] | str] = None,
         col_names_b: Optional[CoordCol | Iterable[str] | str] = None,
         temp_dir: bool | str | Path = False,
+        chunk_size: int = CHUNK_SIZE,
 ) -> pl.LazyFrame:
     """Compute the proportion of each interval in ``df_a`` covered by intervals in ``df_b``.
 
@@ -132,6 +142,8 @@ def as_proportion(
     :param col_names_b: Columns in b (chromosome or query ID, pos, end).
     :param temp_dir: How to materialise the prepared tables before iterating. See
         :func:`agglovar.bed.join.pairwise_join`.
+    :param chunk_size: Chunk A by this size per chromosome. See
+        :func:`agglovar.bed.join.pairwise_join`.
 
     :return: A LazyFrame with two columns: ``_index`` and ``name``.
     """
@@ -142,6 +154,8 @@ def as_proportion(
     col_names_b = get_coord_cols(col_names_b)
 
     col_expr_a = col_names_a.exprs()
+
+    logger.debug('as_proportion: name=%r' % name)
 
     if isinstance(df_a, pl.DataFrame):
         df_a = df_a.lazy()
@@ -165,9 +179,12 @@ def as_proportion(
         .collect()
     )
 
+    logger.debug('as_proportion: %d non-redundant B region(s) after merge_depth' % df_b_nr.height)
+
     df_join = pairwise_join(
         df_a=df_a_clean,
         df_b=df_b_nr,
+        chunk_size=chunk_size,
         col_names_a=col_names_a,
         col_names_b=col_names_b,
         temp_dir=temp_dir,

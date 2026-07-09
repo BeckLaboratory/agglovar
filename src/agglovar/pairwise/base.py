@@ -15,8 +15,11 @@ from collections.abc import (
     Iterator,
     Iterable,
 )
+from concurrent.futures import Executor
+from contextlib import contextmanager
 import logging
 from pathlib import Path
+from typing import Optional
 
 import polars as pl
 
@@ -54,6 +57,7 @@ class PairwiseJoin(ABC):
             df_b: pl.DataFrame | pl.LazyFrame,
             retain_index: bool = False,
             temp_dir: bool | str | Path = False,
+            match_pool: Optional[Executor] = None,
     ) -> Iterator[pl.LazyFrame]:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
@@ -65,6 +69,9 @@ class PairwiseJoin(ABC):
             ``False`` (default) collects both into memory; ``True`` writes them to the
             system temp directory as parquet files; a ``str``/``Path`` writes them to
             that directory. Temp files are always removed on exit.
+        :param match_pool: Optional worker pool for parallel sequence matching (from
+            :meth:`make_match_pool`), or ``None`` to score serially. Ignored by strategies that do
+            no sequence matching.
 
         :yields: A LazyFrame for each chunk.
         """
@@ -76,6 +83,7 @@ class PairwiseJoin(ABC):
             df_b: pl.DataFrame | pl.LazyFrame,
             retain_index: bool = False,
             temp_dir: bool | str | Path = False,
+            match_pool: Optional[Executor] = None,
     ) -> pl.LazyFrame:
         """Find all pairs of variants in two sources that meet a set of criteria.
 
@@ -86,12 +94,31 @@ class PairwiseJoin(ABC):
         :param retain_index: If True, do not drop an existing "_index" column in callset tables
             if they exist.
         :param temp_dir: See :meth:`join_iter`.
+        :param match_pool: See :meth:`join_iter`.
 
         :returns: A join table.
         """
         return pl.concat(
-            self.join_iter(df_a, df_b, retain_index=retain_index, temp_dir=temp_dir)
+            self.join_iter(
+                df_a, df_b, retain_index=retain_index, temp_dir=temp_dir, match_pool=match_pool,
+            )
         )
+
+    @contextmanager
+    def make_match_pool(self, match_threads: Optional[int] = None) -> Iterator[Optional[Executor]]:
+        """Context manager yielding a worker pool for parallel sequence matching, or ``None``.
+
+        The default is a no-op that always yields ``None`` (serial scoring): strategies that do no
+        sequence matching (or do not parallelize it) ignore ``match_threads``. Subclasses that
+        parallelize sequence matching override this to create and tear down a worker pool the caller
+        passes to :meth:`join`/:meth:`join_iter` via ``match_pool``. See
+        :meth:`agglovar.pairwise.overlap.PairwiseOverlap.make_match_pool`.
+
+        :param match_threads: Requested worker count, or ``None`` to keep scoring serial.
+
+        :yields: A worker pool, or ``None`` when scoring serially.
+        """
+        yield None
 
     @property
     @abstractmethod

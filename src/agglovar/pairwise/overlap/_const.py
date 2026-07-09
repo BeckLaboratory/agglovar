@@ -4,6 +4,7 @@ __all__ = [
     'RESERVED_COLS',
     'AUTOGEN_COLS',
     'DEFAULT_CHUNK_SIZE',
+    'MATCH_CHUNK_SIZE',
     'EXPR_OVERLAP_RO',
     'EXPR_SZRO',
     'EXPR_OFFSET_DIST',
@@ -36,6 +37,14 @@ DEFAULT_CHUNK_SIZE: int = 1_500
 Default number of df_a variants per chunk. Chunking controls peak memory and determines the batch
 size presented to the sequence-alignment thread pool — larger values amortize thread-pool overhead
 better but use more memory. Tune alongside ``n_threads`` based on available RAM and CPU count.
+"""
+
+MATCH_CHUNK_SIZE: int = 128
+"""
+Number of ``(seq_a, seq_b)`` pairs scored per worker task when ``match_prop`` is computed on a
+process pool. A small fixed chunk balances the heavy-tailed sequence-length distribution across
+workers; larger chunks starve workers on the long tail. Batches smaller than ``2 * MATCH_CHUNK_SIZE``
+are scored serially because the pool's per-batch overhead outweighs the parallel gain (benchmarked).
 """
 
 EXPR_OVERLAP_RO = (
