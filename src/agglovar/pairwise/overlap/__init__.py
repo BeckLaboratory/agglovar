@@ -219,6 +219,42 @@ but they are different and both have merits. While Agglovar compares *only* vari
 if they are shifted, Truvari includes the shift in the sequence match (i.e. the compared sequences
 include the variant and flanking reference bases).
 
+Minimum segment reciprocal overlap (seg_ro_min)
+-----------------------------------------------
+
+**seg_ro_min**: Minimum segment reciprocal overlap (segment RO) for complex variants.
+
+A complex variant is not one contiguous change but a set of *segments*, some aligned to a reference
+locus and some not aligned at all. Comparing two complex variants by their reference span alone is
+crude: two variants may cover the same span while being built from entirely different pieces.
+Segment RO instead compares the pieces.
+
+Segment RO is the size of the overlap between the two variants' aligned segments, treating segments
+as a multiset. Both variants' segments are broken into ranges at every segment boundary, and each
+range contributes its length times the *smaller* of the two variants' segment depths over it, where
+depth is the number of segments covering the range. Taking the smaller depth is what keeps a segment
+from being counted more than once when it overlaps several segments on the other side, and it makes
+a duplicated segment count only as many times as both variants duplicate it. Segments overlap only
+within the same chromosome and orientation.
+
+Unaligned bases have no reference locus, so there is nothing to intersect them against. The smaller
+of the two variants' unaligned lengths is credited as overlapping, which treats unaligned bases as
+maximally agreeing:
+
+.. code-block:: python
+
+    seg_ro = (overlap + min(unaligned_a, unaligned_b)) / max(total_len_a, total_len_b)
+
+Where `total_len` is the length of all of a variant's segments, aligned and unaligned. Segment RO is
+symmetric and is exactly 1.0 for a variant compared against itself.
+
+Segment RO requires "seg", "qry_pos", and "qry_end" columns on both input tables. The "seg" column
+is a list of segment structs with "chrom", "pos", "end", "qry_pos", "qry_end", and "is_rev" fields.
+
+.. note::
+   `seg_ro_min` is applied after the join, so it does not narrow the candidate pairs on its own.
+   Pair it with a criterion that does, such as `ro_min`.
+
 Reasonable join parameters
 --------------------------
 

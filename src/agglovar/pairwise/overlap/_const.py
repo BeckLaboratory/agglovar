@@ -23,6 +23,8 @@ import polars as pl
 RESERVED_COLS: frozenset[str] = frozenset({
     '_index',
     '_end_ro',
+    '_seg_unaligned',
+    '_seg_total_len',
 })
 """Reserved columns are added automatically to input tables."""
 

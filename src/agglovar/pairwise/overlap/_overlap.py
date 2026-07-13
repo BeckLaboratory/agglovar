@@ -75,6 +75,46 @@ def _match_worker_chunk(pairs: list[tuple[str, str]]) -> list[float]:
     return [model.match_prop(seq_a, seq_b) for seq_a, seq_b in pairs]
 
 
+def _seg_len_exprs() -> tuple[pl.Expr, pl.Expr]:
+    """Build the per-variant segment length expressions used by :meth:`PairwiseOverlap._seg_ro`.
+
+    Expressions apply to an unsuffixed table with "seg", "qry_pos", and "qry_end" columns.
+
+    Only aligned segments appear in "seg", so unaligned bases are the query bases that no segment
+    covers. Aligned segments are measured in reference bases, matching the segment overlap they are
+    compared against, which is what makes segment RO exactly 1.0 for a variant against itself.
+
+    :returns: Tuple of ("_seg_unaligned", "_seg_total_len") expressions.
+    """
+    seg_ref_len = (
+        pl.col('seg').list.eval(
+            pl.element().struct.field('end') - pl.element().struct.field('pos')
+        )
+        .list.sum()
+        .fill_null(0)
+    )
+
+    seg_qry_len = (
+        pl.col('seg').list.eval(
+            (
+                pl.element().struct.field('qry_end')
+                - pl.element().struct.field('qry_pos')
+            ).abs()
+        )
+        .list.sum()
+        .fill_null(0)
+    )
+
+    seg_unaligned = (
+        (pl.col('qry_end') - pl.col('qry_pos')).abs() - seg_qry_len
+    ).clip(0)
+
+    return (
+        seg_unaligned.alias('_seg_unaligned'),
+        (seg_ref_len + seg_unaligned).alias('_seg_total_len'),
+    )
+
+
 @immutable
 class PairwiseOverlap(PairwiseJoin):
     """Pairwise overlap class.
@@ -848,6 +888,12 @@ class PairwiseOverlap(PairwiseJoin):
                 pl.col('end').alias('_end_ro')
             )
 
+        # Per-variant segment lengths for segment RO. These are constant per variant, so they are
+        # computed once here rather than once per chunk inside _seg_ro.
+        if self.has_seg_ro:
+            df_a = df_a.with_columns(*_seg_len_exprs())
+            df_b = df_b.with_columns(*_seg_len_exprs())
+
         # Append suffixes to all columns
         df_a = df_a.select(pl.all().name.suffix('_a'))
         df_b = df_b.select(pl.all().name.suffix('_b'))
@@ -1079,7 +1125,172 @@ class PairwiseOverlap(PairwiseJoin):
 
         return df_b.filter(*filter_list)
 
+    @staticmethod
+    def _seg_events(
+            df_pairs: pl.LazyFrame,
+            df: pl.LazyFrame,
+            side: str,
+    ) -> pl.LazyFrame:
+        """Expand one side's segments into depth events, two rows per segment.
+
+        Each segment becomes a ``+1`` event at its start and a ``-1`` event at its end on its own
+        side's depth counter, leaving the other side's counter untouched. Variants with no segments
+        contribute no events (they are all unaligned bases).
+
+        :param df_pairs: Candidate pairs with a ``_pair_id`` row index.
+        :param df: Prepared (suffixed) table for this side.
+        :param side: Either "a" or "b".
+
+        :returns: Depth events for this side.
+        """
+        df_seg = (
+            df_pairs
+            .join(
+                (
+                    df
+                    .select(f'_index_{side}', f'seg_{side}')
+                    .explode(f'seg_{side}', empty_as_null=False)
+                    .select(
+                        f'_index_{side}',
+                        pl.col(f'seg_{side}').struct.field('chrom').alias('_seg_chrom'),
+                        pl.col(f'seg_{side}').struct.field('is_rev').alias('_seg_rev'),
+                        pl.col(f'seg_{side}').struct.field('pos').alias('_seg_pos'),
+                        pl.col(f'seg_{side}').struct.field('end').alias('_seg_end'),
+                    )
+                    # A null segment list explodes to a single null row (an empty one drops out).
+                    .filter(pl.col('_seg_pos').is_not_null())
+                ),
+                left_on=f'index_{side}', right_on=f'_index_{side}', how='inner',
+            )
+        )
+
+        depth_a, depth_b = (1, 0) if side == 'a' else (0, 1)
+
+        return pl.concat([
+            df_seg.select(
+                '_pair_id', '_seg_chrom', '_seg_rev',
+                pl.col('_seg_pos').alias('_seg_x'),
+                pl.lit(depth_a, pl.Int32).alias('_seg_depth_a'),
+                pl.lit(depth_b, pl.Int32).alias('_seg_depth_b'),
+            ),
+            df_seg.select(
+                '_pair_id', '_seg_chrom', '_seg_rev',
+                pl.col('_seg_end').alias('_seg_x'),
+                pl.lit(-depth_a, pl.Int32).alias('_seg_depth_a'),
+                pl.lit(-depth_b, pl.Int32).alias('_seg_depth_b'),
+            ),
+        ])
+
     def _seg_ro(
+            self,
+            df_join: pl.LazyFrame,
+            df_a: pl.LazyFrame,
+            df_b: pl.LazyFrame,
+    ) -> pl.LazyFrame:
+        """Compute segment reciprocal overlap (RO) for complex variants.
+
+        Complex variants are composed of segments, some aligned to the reference and some not.
+        Overlap is the size of the *multiset* intersection of the two variants' aligned segments:
+        decompose both variants' segments into atomic ranges at every segment boundary, and sum
+        ``width * min(depth_a, depth_b)`` over them, where depth is the number of segments covering
+        a range. Taking the minimum depth is what stops a segment from being counted more than once
+        when it overlaps several segments on the other side. Depth is tracked per chromosome and
+        orientation, so segments never overlap across either.
+
+        Unaligned bases (query bases no segment covers) have no reference locus to intersect, so
+        ``min(unaligned_a, unaligned_b)`` of them are credited as overlapping. The RO is then::
+
+            (overlap + min(unaligned_a, unaligned_b)) / max(total_len_a, total_len_b)
+
+        This is symmetric, and it is 1.0 exactly when a variant is compared against itself.
+
+        Rather than the O(seg_a * seg_b) cross product of segment pairs, the overlap is computed by
+        a sweep costing O(seg_a + seg_b): each segment becomes a ``+1``/``-1`` event pair, and depth
+        is the running sum of those events in coordinate order. Sorting the events puts each
+        ``(pair, chrom, is_rev)`` group in one contiguous block whose events sum to zero, so a plain
+        ``cum_sum`` (no window) yields the correct depth within every group and returns to zero at
+        each group boundary. Widths follow the same way: the final row of a group has zero depth, so
+        the meaningless width spanning into the next group is multiplied by zero. Coincident
+        boundaries need no special handling either -- they simply span zero width.
+
+        :param df_join: Join table without segment RO.
+        :param df_a: Table A.
+        :param df_b: Table B.
+
+        :return: Join table with a "seg_ro" column.
+        """
+        # Materialize the join once. The pairs feed both sides' events and the table they are
+        # joined back onto, so leaving it lazy re-runs the join (and any match scoring in it) for
+        # each of those branches.
+        df_join = df_join.collect().lazy()
+
+        df_pairs = df_join.select('index_a', 'index_b').with_row_index('_pair_id')
+
+        df_overlap = (
+            pl.concat([
+                self._seg_events(df_pairs, df_a, 'a'),
+                self._seg_events(df_pairs, df_b, 'b'),
+            ])
+            .sort('_pair_id', '_seg_chrom', '_seg_rev', '_seg_x')
+            .select(
+                '_pair_id',
+                (pl.col('_seg_x').shift(-1) - pl.col('_seg_x')).alias('_seg_width'),
+                pl.min_horizontal(
+                    pl.col('_seg_depth_a').cum_sum(),
+                    pl.col('_seg_depth_b').cum_sum(),
+                )
+                .clip(0)
+                .alias('_seg_depth'),
+            )
+            .group_by('_pair_id')
+            .agg(
+                (pl.col('_seg_width').fill_null(0) * pl.col('_seg_depth'))
+                .sum()
+                .alias('_seg_overlap')
+            )
+        )
+
+        seg_ro_num = (
+            pl.col('_seg_overlap').fill_null(0)
+            + pl.min_horizontal('_seg_unaligned_a', '_seg_unaligned_b')
+        )
+
+        seg_ro_den = pl.max_horizontal('_seg_total_len_a', '_seg_total_len_b')
+
+        df_seg_ro = (
+            df_pairs
+            .join(df_overlap, on='_pair_id', how='left')
+            .join(
+                df_a.select('_index_a', '_seg_unaligned_a', '_seg_total_len_a'),
+                left_on='index_a', right_on='_index_a', how='left',
+            )
+            .join(
+                df_b.select('_index_b', '_seg_unaligned_b', '_seg_total_len_b'),
+                left_on='index_b', right_on='_index_b', how='left',
+            )
+            .select(
+                'index_a',
+                'index_b',
+                (
+                    pl.when(seg_ro_den > 0)
+                    .then(seg_ro_num / seg_ro_den)
+                    .otherwise(1.0)  # Two empty variants: nothing to disagree about
+                )
+                .clip(0.0, 1.0)  # Guard float error only, the ratio cannot exceed 1.0
+                .cast(pl.Float32)
+                .alias('seg_ro')
+            )
+        )
+
+        return (
+            df_join
+            .join(df_seg_ro, on=['index_a', 'index_b'], how='left')
+            .with_columns(
+                pl.col('seg_ro').fill_null(1.0)
+            )
+        )
+
+    def _seg_ro_old(
             self,
             df_join: pl.LazyFrame,
             df_a: pl.LazyFrame,
