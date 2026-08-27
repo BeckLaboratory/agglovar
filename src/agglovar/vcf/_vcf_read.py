@@ -20,7 +20,7 @@ import polars as pl
 import pysam
 
 from agglovar.expr.variant import (
-    id_expr,
+    id_expr_for_table,
     sort_cols,
 )
 import agglovar.schema as _agg_schema
@@ -79,7 +79,7 @@ def _classify_sequence_allele(
     Strips common suffix then common prefix (both case-insensitive) to find the
     minimal changed region and derive the variant type.
 
-    :param pos0: pysam 0-based record position.
+    :param pos0: 0-based position of the REF allele (``record.start``).
     :param vcf_ref: REF allele string.
     :param vcf_alt: ALT allele string (one alternate, not symbolic).
     :returns: ``(vartype, varlen, ref_col, alt_col, seq_col, pos, end)`` where *pos*
@@ -120,17 +120,38 @@ def _scalar(v: object) -> object:
     return v[0] if isinstance(v, tuple) and v else (None if isinstance(v, tuple) else v)
 
 
+def _record_info_end(record: pysam.VariantRecord) -> Optional[int]:
+    """Recover ``INFO/END`` from a pysam record.
+
+    htslib folds ``INFO/END`` into the record end coordinate and pysam never exposes it through
+    ``record.info``, so it has to be read back from ``record.stop``.  That attribute falls back to
+    ``start + len(REF)`` for records declaring no END, so a record counts as declaring one only when
+    ``record.stop`` reaches past the REF span.  An END written redundantly (equal to the implicit
+    REF end) therefore reads as absent, which costs nothing: it carries no information the implicit
+    end does not.
+
+    :param record: Record to read.
+
+    :returns: The ``INFO/END`` value, or `None` if the record declares no END.
+    """
+    return record.stop if record.stop != record.start + len(record.ref) else None
+
+
 def _classify_symbolic_allele(
     pos0: int,
     alt_str: str,
     info_vals: dict[str, object],
+    info_end: Optional[int] = None,
     label: str = '',
 ) -> tuple[str, Optional[int], Optional[str], Optional[str], Optional[str], int, int]:
     """Classify a symbolic ALT such as ``<INS>``, ``<DEL:ME>``, ``<INV>``, ``<DUP>``.
 
-    :param pos0: pysam 0-based record position.
+    :param pos0: 0-based position of the REF allele (``record.start``).  A symbolic ALT pads REF
+        with the base preceding the event, so the event itself starts at ``pos0 + 1``.
     :param alt_str: The symbolic ALT string including angle brackets.
     :param info_vals: Pre-fetched INFO values for this record keyed by field ID.
+    :param info_end: ``INFO/END`` for this record, or `None` if it declares none.  Supplied by
+        :func:`_record_info_end` rather than read from *info_vals*, which never carries it.
     :param label: Optional context string appended to warning messages.
     :returns: ``(vartype, varlen, ref_col, alt_col, seq_col, pos, end)``
     :raises ValueError: If the variant is an INS with no SVLEN or SEQ in INFO.
@@ -138,7 +159,8 @@ def _classify_symbolic_allele(
     alt_base = alt_str[1:-1].split(':')[0].upper()   # '<DEL:ME>' → 'DEL'
 
     svtype_raw = _scalar(info_vals.get('SVTYPE'))
-    svtype = svtype_raw.upper() if isinstance(svtype_raw, str) else None
+    # SVTYPE carries subtypes as well ('DUP:TANDEM'), so both sides compare as base types
+    svtype = svtype_raw.upper().split(':')[0] if isinstance(svtype_raw, str) else None
 
     if alt_base and svtype and alt_base != svtype:
         warnings.warn(
@@ -148,13 +170,12 @@ def _classify_symbolic_allele(
         )
     vartype = alt_base or svtype or 'UNK'
 
+    pos = pos0 + 1   # Step over the REF padding base to the first affected base
+
     svlen_raw = _scalar(info_vals.get('SVLEN'))
-    end_raw = _scalar(info_vals.get('END'))
     seq_raw = _scalar(info_vals.get('SEQ'))
 
     svlen: Optional[int] = abs(int(svlen_raw)) if svlen_raw is not None else None
-    # INFO/END is 1-based inclusive; in 0-based half-open BED the end equals that integer
-    info_end: Optional[int] = int(end_raw) if end_raw is not None else None
     seq: Optional[str] = str(seq_raw) if seq_raw is not None else None
 
     if vartype == 'INS':
@@ -173,18 +194,21 @@ def _classify_symbolic_allele(
                 f'iter_vcf{label}: cannot determine varlen for symbolic INS '
                 f'{alt_str!r}: INFO has neither SVLEN nor SEQ'
             )
-        return ('INS', varlen, None, None, seq, pos0, pos0 + 1)
+        return ('INS', varlen, None, None, seq, pos, pos + 1)
 
     # DEL, INV, DUP, and any other non-INS symbolic type
     sources: dict[str, int] = {}
     if svlen is not None:
         sources['SVLEN'] = svlen
     if info_end is not None:
-        sources['END'] = info_end - pos0
+        # INFO/END is 1-based inclusive, which is also the 0-based half-open end
+        sources['END'] = info_end - pos
     if seq is not None:
         sources['SEQ'] = len(seq)
 
-    if len(sources) > 1 and len(set(sources.values())) > 1:
+    # Callers disagree over whether POS names the padding base or the first affected base, so a
+    # 1 bp spread is convention noise rather than a real conflict
+    if len(sources) > 1 and max(sources.values()) - min(sources.values()) > 1:
         warnings.warn(
             f'iter_vcf{label}: conflicting varlen sources for {vartype} '
             f'{alt_str!r}: {sources}; using highest-priority value',
@@ -200,14 +224,15 @@ def _classify_symbolic_allele(
     else:
         varlen = None
 
-    if info_end is not None:
+    # Hold "end - pos == varlen"; INFO/END sets the end only when no source gives a length
+    if varlen is not None:
+        end = pos + varlen
+    elif info_end is not None:
         end = info_end
-    elif varlen is not None:
-        end = pos0 + varlen
     else:
-        end = pos0 + 1
+        end = pos + 1
 
-    return (vartype, varlen, None, None, seq, pos0, end)
+    return (vartype, varlen, None, None, seq, pos, end)
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +416,7 @@ def _emit_batch(
             .filter(pl.col('_table_key') == tname)
             .select(tcols)
             .lazy()
-            .with_columns(id_expr)
+            .with_columns(id_expr_for_table(tname))
             .sort(list(sort_cols))
         )
         for tname, tcols in type_cols.items()
@@ -467,6 +492,7 @@ def iter_vcf(
         combined_schema, type_cols, ignored_schema, sample_schema = _build_schemas(header)
 
         info_ids: list[str] = [info.id for info in header.info]
+        _has_info_end: bool = 'END' in info_ids
         _info_number_a: frozenset[str] = frozenset(
             i.id for i in header.info if i.number == 'A'
         )
@@ -505,11 +531,10 @@ def iter_vcf(
         counts = _new_counts()
         n_base_rows = 0
         rec_idx = 0
-
         for record in fetch_iter:
             alts = record.alts or ()
 
-            vcf_pos_1 = record.pos + 1
+            vcf_pos_1 = record.pos   # pysam record.pos is the 1-based VCF POS
             vcf_id_val: Optional[str] = (
                 record.id if record.id and record.id != '.' else None
             )
@@ -532,6 +557,12 @@ def iter_vcf(
                     record_info[iid] = record.info[iid]
                 except KeyError:
                     record_info[iid] = None
+
+            # pysam drops INFO/END from record.info; restore it for the vcf_info_END column
+            record_end = _record_info_end(record)
+
+            if _has_info_end:
+                record_info['END'] = record_end
 
             record_emitted = False
 
@@ -559,11 +590,11 @@ def iter_vcf(
                 try:
                     if alt_str.startswith('<'):
                         vt, vl, rc, ac, sc, pos, end_val = _classify_symbolic_allele(
-                            record.pos, alt_str, record_info, label,
+                            record.start, alt_str, record_info, record_end, label,
                         )
                     else:
                         vt, vl, rc, ac, sc, pos, end_val = _classify_sequence_allele(
-                            record.pos, record.ref, alt_str,
+                            record.start, record.ref, alt_str,
                         )
                 except (ValueError, TypeError) as exc:
                     warnings.warn(
@@ -595,7 +626,7 @@ def iter_vcf(
                 base_cols['chrom'].append(record.contig)
                 base_cols['pos'].append(pos)
                 base_cols['end'].append(end_val)
-                base_cols['id'].append(None)   # filled by id_expr in _emit_batch
+                base_cols['id'].append(None)   # filled by id_expr_for_table() in _emit_batch
                 base_cols['vartype'].append(vt)
                 base_cols['varlen'].append(vl)
                 base_cols['ref'].append(rc)

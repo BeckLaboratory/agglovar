@@ -6,6 +6,7 @@ __all__ = [
     'sort_cols',
     'id_expr_noalias',
     'id_expr',
+    'id_expr_for_table',
     'lead_src_expr',
 ]
 
@@ -13,6 +14,8 @@ import logging
 from typing import Optional
 
 import polars as pl
+
+import agglovar.schema as _agg_schema
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +67,41 @@ id_expr_noalias = (
 """Expression for generating variant IDs."""
 
 id_expr = id_expr_noalias.alias('id')
-"""Expression for generating variant IDs including alias "id" for the result (ideal for `with_column()`)."""
+"""Expression for generating variant IDs including alias "id" for the result (ideal for `with_column()`).
+
+Requires both the SNV columns (``ref``, ``alt``) and the non-SNV column (``varlen``) to be present:
+Polars resolves both branches of the expression regardless of which one a row selects.  Use
+:func:`id_expr_for_table` for single-type tables, which carry only the columns listed in
+:data:`agglovar.schema.STANDARD_FIELDS` for their type.
+"""
+
+
+def id_expr_for_table(table: str, alias: Optional[str] = 'id') -> pl.Expr:
+    """Get a variant ID expression for a single variant-type table.
+
+    Single-type tables carry only the columns listed for their type in
+    :data:`agglovar.schema.STANDARD_FIELDS`, so :data:`id_expr` cannot be applied to them (see its
+    documentation).  This routine returns the one branch that matches the table's columns.
+
+    :param table: Table name from :data:`agglovar.schema.STANDARD_FIELDS` (e.g. "snv", "insdel").
+    :param alias: Output column name for the resulting IDs, or `None` to leave it unaliased.
+
+    :returns: An expression yielding variant IDs for *table*.
+
+    :raises ValueError: If *table* is not a known variant-type table.
+    """
+    fields = _agg_schema.STANDARD_FIELDS.get(table)
+
+    if fields is None:
+        raise ValueError(
+            f'Unknown variant-type table: {table!r}: '
+            f'expected one of {", ".join(sorted(_agg_schema.STANDARD_FIELDS))}'
+        )
+
+    # Tables without "varlen" (SNV) are identified by their changed bases, all others by length
+    expr = id_nonsnv_expr if 'varlen' in fields else id_snv_expr
+
+    return expr.alias(alias) if alias is not None else expr
 
 
 def lead_src_expr(
