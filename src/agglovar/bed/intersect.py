@@ -120,6 +120,7 @@ def as_bool(
         )
     )
 
+
 def as_proportion(
         df_a: pl.LazyFrame | pl.DataFrame,
         df_b: pl.LazyFrame | pl.DataFrame,
@@ -135,7 +136,7 @@ def as_proportion(
     proportion. Zero-length intervals (``pos == end``) produce ``NaN`` (0 / 0).
 
     :param df_a: Table a.
-    :param df_b: Table b.
+    :param df_b: Table b.`
     :param name: Name of the column to add.
     :param col_names_a: Columns in a (chromosome or query ID, pos, end).
     :param col_names_b: Columns in b (chromosome or query ID, pos, end).

@@ -29,7 +29,7 @@ deps = [
     "flake8-rst-docstrings",
     "flake8-pyproject",
     "flake8-rst-docstrings",
-    "flake8-dunder-all",
+    "flake8-dunder-all>=0.6.0",
     "flake8-mutable",
 ]
 commands = [

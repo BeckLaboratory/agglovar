@@ -57,7 +57,7 @@ dev = [
     "flake8>=7.3.0",
     "flake8-bugbear>=24.12.12",
     "flake8-docstrings>=1.7.0",
-    "flake8-dunder-all>=0.5.0",
+    "flake8-dunder-all>=0.6.0",
     "flake8-mutable>=1.2.0",
     "flake8-pyproject>=1.2.3",
     "flake8-rst-docstrings>=0.3.1",
@@ -108,9 +108,17 @@ max-line-length = 120
 [tool.flake8]
 max-line-length = 120
 docstring-convention = "pep257"
+# DALL100/DALL101 (flake8-dunder-all >= 0.6.0) require a top-level PEP 562 __dir__ in every module.
+# This package has no module-level __getattr__ to justify one, and a __dir__ returning only __all__
+# would break agglovar.dev.imports.librl, which walks dir(module) to build its reload graph.
+#
+# These cannot go in extend-ignore: flake8 validates those codes against '^[A-Z]{1,3}[0-9]{0,3}$'
+# and the 4-letter DALL prefix fails. per-file-ignores skips that check, but selects the single
+# longest matching pattern rather than unioning them, so the codes must be repeated in every entry.
 per-file-ignores = [
-    "src/agglovar/merge/config/parser.py: D200, D205, D212, D300, D400, D401, D403, D415",
-    "src/agglovar/vcf/__init__.py: DALL002, F401, F403",
-    "src/agglovar/pairwise/overlap/__init__.py: DALL002, F401, F403",
+    "*: DALL100, DALL101",
+    "src/agglovar/merge/config/parser.py: DALL100, DALL101, D200, D205, D212, D300, D400, D401, D403, D415",
+    "src/agglovar/vcf/__init__.py: DALL100, DALL101, DALL002, F401, F403",
+    "src/agglovar/pairwise/overlap/__init__.py: DALL100, DALL101, DALL002, F401, F403",
 ]
 rst-roles = ["class", "meth", "const", "ref", "func", "mod", "attr", "data"]

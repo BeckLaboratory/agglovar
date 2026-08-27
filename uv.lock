@@ -62,7 +62,7 @@ dev = [
     { name = "flake8", specifier = ">=7.3.0" },
     { name = "flake8-bugbear", specifier = ">=24.12.12" },
     { name = "flake8-docstrings", specifier = ">=1.7.0" },
-    { name = "flake8-dunder-all", specifier = ">=0.5.0" },
+    { name = "flake8-dunder-all", specifier = ">=0.6.0" },
     { name = "flake8-mutable", specifier = ">=1.2.0" },
     { name = "flake8-pyproject", specifier = ">=1.2.3" },
     { name = "flake8-rst-docstrings", specifier = ">=0.3.1" },
@@ -570,7 +570,7 @@ wheels = [
 
 [[package]]
 name = "flake8-dunder-all"
-version = "0.5.0"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "astatine" },
@@ -580,9 +580,9 @@ dependencies = [
     { name = "flake8" },
     { name = "natsort" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/69/94/c6fe6c1ea239d6e732beb38324bcecf0132008260183caf2a2d31bc9565a/flake8_dunder_all-0.5.0.tar.gz", hash = "sha256:4ea582eb77cc7333df223608cb4d6ae813f07b167c19d4d65a6a52e388e89398", size = 9716, upload-time = "2025-05-21T16:26:40.723Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cd/76/86a99b3d0e77fb139515fc6358e97f0092a3b8c7d5633cdea406af40fc97/flake8_dunder_all-0.6.0.tar.gz", hash = "sha256:7a06bc1877c0b8d7f47829196d7b84daea12799dbc86e5ce9cbed3a94e45c606", size = 9926, upload-time = "2026-07-10T08:13:46.323Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e4/6c/e7c3401ce8c5515b80bd121f89bb0fa241cc3f7a0c0a83b38be2a56d2d83/flake8_dunder_all-0.5.0-py3-none-any.whl", hash = "sha256:fcd7d4ac9cbb3a1bca4c41221a6eb8bcd3c0965269e98772802cdd333beb7adc", size = 12153, upload-time = "2025-05-21T16:26:39.332Z" },
+    { url = "https://files.pythonhosted.org/packages/26/2d/34becf73d0755a058c6c7aa1adde069fba9a3788b71f8ac40991d4b01308/flake8_dunder_all-0.6.0-py3-none-any.whl", hash = "sha256:975173fab13c88cef4a04a488116d938fd4bc7e27449bd4e592fc174b72b7344", size = 12470, upload-time = "2026-07-10T08:13:45.429Z" },
 ]
 
 [[package]]
