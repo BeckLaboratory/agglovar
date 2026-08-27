@@ -26,7 +26,7 @@ def merge_depth(
         distance: int = 0,
         col_names: Optional[CoordCol | Iterable[str] | str] = None,
         col_max_depth: Optional[str] = 'max_depth'
-):
+) -> pl.LazyFrame:
     """Merge overlapping regions in a table.
 
     :param df: Table of coordinates.
@@ -80,7 +80,7 @@ def melt_depth(
         col_names: CoordCol,
         col_loc: str = '_loc',
         col_depth: str = '_depth',
-):
+) -> pl.LazyFrame:
     """Get a table of depths by locations of changes.
 
     The table will have one row for each location of change with end positions having two entries (one for the

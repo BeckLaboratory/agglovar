@@ -120,7 +120,6 @@ def as_bool(
         )
     )
 
-
 def as_proportion(
         df_a: pl.LazyFrame | pl.DataFrame,
         df_b: pl.LazyFrame | pl.DataFrame,
