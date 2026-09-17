@@ -217,8 +217,12 @@ class PairwiseOverlapStage():
             )
 
         if self.match_filter_pass:
+            # Both passed or both failed; a null filter is a source that declared none, which
+            # counts as passing.  Nulls are filled after the length reduction, which is much
+            # cheaper than filling the list column itself
             join_predicates_list.append(
-                (pl.col('filter_a').list.len() == 0) ^ (pl.col('filter_b').list.len() == 0)
+                (pl.col('filter_a').list.len().fill_null(0) == 0)
+                == (pl.col('filter_b').list.len().fill_null(0) == 0)
             )
 
         if self.match_prop_min is not None and self.match_prop_min > 0.0:

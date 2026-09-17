@@ -34,6 +34,12 @@ def write_vcf(
     to INFO fields; the VCF header is rebuilt from column dtypes via
     :func:`agglovar.vcf.polars_to_vcf_type`.
 
+    Every string INFO and FORMAT value must be passed through
+    :func:`agglovar.vcf.vcf_percent_encode` before it is written.  A value holding a literal
+    ``,``, ``;``, ``=``, ``:``, ``%``, tab or newline is unreadable otherwise: the reader splits
+    on the delimiter and a ``Number=1`` field silently loses everything past the first comma,
+    which is the failure :func:`agglovar.vcf.iter_vcf` reports and repairs on the way in.
+
     :param df: Variant table conforming to :data:`agglovar.vcf.VCF_BASE_FIXED_SCHEMA` (plus
         any ``vcf_info_*`` columns). :class:`polars.LazyFrame` inputs are collected internally.
     :param path: Destination path.

@@ -50,7 +50,7 @@ sort_cols = (
     pl.col('chrom'),
     pl.col('pos'),
     pl.col('end'),
-    pl.col('filter').list.len(),
+    pl.col('filter').list.len().fill_null(0),   # A null filter sorts with the passing variants
     pl.coalesce(
         pl.col('^id$'),
         pl.lit(None),

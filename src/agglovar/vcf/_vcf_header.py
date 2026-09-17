@@ -58,6 +58,13 @@ _META_KNOWN_KEYS: frozenset[str] = frozenset({
     'fileformat', 'fileDate', 'source', 'reference',
 })
 
+# Header keys with a dedicated field on VcfHeader (upper-case for case-insensitive matching).
+# pysam reports header lines it does not model natively, such as "##ALT", with record type
+# "STRUCTURED" and the real header key in the record's "key" attribute.
+_STRUCTURED_FIELD_TYPES: frozenset[str] = frozenset({
+    'CONTIG', 'INFO', 'FILTER', 'FORMAT', 'ALT',
+})
+
 
 # --- Internal helpers ---
 
@@ -111,20 +118,33 @@ def _parse_type(type_str: str, field_id: str = '') -> str:
     return type_str
 
 
-def _number_to_polars_type(number: int | str, type_str: str) -> PolarsDataType:
+def _number_to_polars_type(
+    number: int | str,
+    type_str: str,
+    *,
+    per_allele: bool = False,
+) -> PolarsDataType:
     """Map a VCF (Number, Type) pair to a Polars data type.
 
     * ``Flag`` / ``Number=0`` → :class:`polars.Boolean`
-    * ``Number=1`` or ``Number='A'`` → scalar base type (``'A'`` = one value per alt allele;
-      in the per-allele expanded table this is already scalar)
+    * ``Number=1`` → scalar base type
+    * ``Number='A'`` → scalar base type if *per_allele*, else :class:`polars.List` of base type
     * ``Number='R'``, ``'G'``, ``'.'``, or integer > 1 → :class:`polars.List` of base type
+
+    :param number: VCF Number value.
+    :param type_str: VCF Type value.
+    :param per_allele: Whether the destination table holds one row per ALT allele.  ``Number='A'``
+        carries one value per ALT, so it collapses to a scalar in a per-allele table and stays a
+        list of per-ALT values in a per-record one.
+
+    :raises KeyError: If ``type_str`` is not a valid VCF Type.
     """
     if type_str == 'Flag':
         return pl.Boolean
 
     base: PolarsDataType = VCF_TO_POLARS_TYPE[type_str]
 
-    if number == 1 or number == 'A':
+    if number == 1 or (number == 'A' and per_allele):
         return base
 
     return pl.List(base)
@@ -157,6 +177,26 @@ def _get_attrs(rec: object) -> dict[str, str]:
 
     except (TypeError, ValueError):
         return {}
+
+
+def _structured_value(rec: object, key: str) -> str:
+    """Extract the ``<...>`` value of a structured pysam header record.
+
+    Uses the record's own text so the original spelling round-trips, falling back to
+    rebuilding the value from ``attrs`` when the text is not in ``##key=<...>`` form.
+
+    :param rec: pysam header record.
+    :param key: Header key of *rec* (e.g. ``'PEDIGREE'``).
+    """
+    line = str(rec).strip()
+    prefix = f'##{key}='
+
+    if line.startswith(prefix) and len(line) > len(prefix):
+        return line[len(prefix):]
+
+    attrs = _get_attrs(rec)
+
+    return '<' + ','.join(f'{k}={v}' for k, v in attrs.items()) + '>'
 
 
 # --- Header record dataclasses ---
@@ -831,6 +871,10 @@ def read_vcf_header(vcf_file: 'pysam.VariantFile') -> VcfHeader:
     obtain raw string values (avoiding pysam's numeric conversions for ``Number``).
     Sample names are taken from ``vcf_file.header.samples``.
 
+    pysam types header lines it does not model natively as ``STRUCTURED`` and reports
+    the header key separately. Those with a dedicated field (``##ALT``) are stored in it,
+    and any others (``##PEDIGREE``, ``##SAMPLE``, ...) are kept intact as metadata.
+
     :param vcf_file: An open :class:`pysam.VariantFile`.
     :returns: A :class:`VcfHeader` populated from the file's header.
     :raises ValueError: If the VCF version is missing or malformed.
@@ -845,10 +889,20 @@ def read_vcf_header(vcf_file: 'pysam.VariantFile') -> VcfHeader:
 
     for rec in ph.records:
         rec_type = str(getattr(rec, 'type', 'GENERIC')).upper()
+        key = str(getattr(rec, 'key', '') or '')
         attrs = _get_attrs(rec)
 
+        if rec_type == 'STRUCTURED':
+            # Header lines pysam does not model natively (##ALT, ##PEDIGREE, ##SAMPLE, ...).
+            # Route those with a dedicated field to its handler and keep the rest as meta.
+            if key.upper() in _STRUCTURED_FIELD_TYPES:
+                rec_type = key.upper()
+            else:
+                if key:
+                    hdr.add_meta(key, _structured_value(rec, key))
+                continue
+
         if rec_type == 'GENERIC':
-            key = str(getattr(rec, 'key', '') or '')
             value = str(getattr(rec, 'value', '') or '')
             if key == 'fileformat':
                 pass  # handled above via ph.version

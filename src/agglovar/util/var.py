@@ -27,8 +27,13 @@ def id_version_expr(
     """
     expr_id = pl.col(id_col).str.replace(r'\.[0-9]*$', '')
 
+    # Rank on the filter count rather than the filter column itself: ranking a list column
+    # yields null for a null filter, which leaves duplicate IDs unversioned, and the count
+    # keeps the ordering that matters here -- variants that passed take the unversioned ID
     expr_version = (
         pl.col('filter')
+        .list.len()
+        .fill_null(0)
         .rank(method='ordinal')
         .over(expr_id)
         - 1
