@@ -87,7 +87,7 @@ Join columns:
        variants in the record.
     #. match_prop: Alignment match score divided by the maximum alignment match score
 
-Row indexes start at 1 and increment by 1 for each row in the input table regardless of if the row
+Row indexes start at 0 and increment by 1 for each row in the input table regardless of if the row
 is part of a join or not. This is consistent with the behavior of
 :meth:`polars.DataFrame.with_row_index()` and can be used for joining with the original variant
 table.

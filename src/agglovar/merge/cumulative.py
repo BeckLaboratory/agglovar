@@ -400,9 +400,9 @@ class MergeCumulative(MergeBase):
                     df_cumulative.lazy(), callset_mat['table'].lazy(),
                     temp_dir=temp_dir, match_pool=match_pool,
                 )
-                .sort('weight', descending=True, maintain_order=True)
-                .unique('index_a', keep='first')
-                .unique('index_b', keep='first')
+                .sort(['weight', 'index_a', 'index_b'], descending=[True, False, False])
+                .unique('index_a', keep='first', maintain_order=True)
+                .unique('index_b', keep='first', maintain_order=True)
                 .collect()
             )
 
